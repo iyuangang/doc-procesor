@@ -1,0 +1,23 @@
+.venv
+.mypy_cache
+*.doc
+*.docx
+*.pdf
+*.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+
+# Output
+*.csv
