@@ -1,8 +1,10 @@
 from pathlib import Path
 import pandas as pd  # type: ignore
-from docx import Document
+from docx import Document  # type: ignore
+from docx.document import Document as DocxDocument
+from docx.table import Table as DocxTable
 import re
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Set
 import click
 from rich.console import Console
 from rich.table import Table
@@ -148,20 +150,12 @@ def validate_car_info(car_info: dict[str, Any]) -> tuple[bool, str]:
 
 
 def get_table_type(
-    headers: list[str], current_category: Optional[str], current_type: Optional[str]
+    headers: List[str], current_category: Optional[str], current_type: Optional[str]
 ) -> tuple[str, str]:
     """
     根据表头判断表格类型
-
-    Args:
-        headers: 表头列表
-        current_category: 当前分类，可能为None
-        current_type: 当前类型，可能为None
-
-    Returns:
-        (分类, 类型)的元组
     """
-    header_set = set(headers)
+    header_set: Set[str] = set(headers)
 
     # 如果没有当前分类或类型，使用默认值
     current_category = current_category or "未知"
@@ -260,117 +254,19 @@ def process_car_info(
     return car_info
 
 
-def extract_car_info(doc_path: str, verbose: bool = False) -> list[dict[str, Any]]:
-    """从docx文件中提取车辆信息"""
-    doc = Document(doc_path)
-    cars = []
-    current_category = None
-    current_type = None
-    batch_number = None
-
-    # 创建进度显示（如果需要详细信息）
-    progress = None
-    if verbose:
-        progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=Console(stderr=True),
-            transient=True,
-        )
-        progress.start()
-        table_task = progress.add_task("[yellow]处理表格", total=len(doc.tables))
-
-    try:
-        # 遍历文档中的所有元素
-        for element in doc.element.body:
-            # 处理段落
-            if element.tag.endswith("p"):
-                text = element.text.strip()
-                if not text:
-                    continue
-
-                # 提取批次号
-                if not batch_number:
-                    batch_number = extract_batch_number(text)
-
-                # 更新分类信息
-                if "一、节能型汽车" in text:
-                    current_category = "节能型"
-                elif "二、新能源汽车" in text:
-                    current_category = "新能源"
-                elif text.startswith("（") and "）" in text:
-                    current_type = text.strip()
-
-            # 处理表格
-            elif element.tag.endswith("tbl"):
-                table = None
-                for t in doc.tables:
-                    if t._element is element:
-                        table = t
-                        break
-
-                if not table or not table.rows:
-                    continue
-
-                # 获取表头
-                headers = [cell.text.strip() for cell in table.rows[0].cells]
-
-                # 根据表头判断表格类型
-                table_category, table_type = get_table_type(
-                    headers, current_category, current_type
-                )
-
-                # 处理数据行
-                for row in table.rows[1:]:
-                    cells = [cell.text.strip() for cell in row.cells]
-                    if not cells or not any(cells):  # 跳过空行
-                        continue
-
-                    car_info = {
-                        "raw_text": " | ".join(cells),
-                        "category": table_category,
-                        "sub_type": table_type,
-                        "car_type": 2 if table_category == "节能型" else 1,
-                    }
-
-                    # 根据不同表格类型处理字段
-                    for i, header in enumerate(headers):
-                        if i < len(cells) and cells[i]:
-                            car_info[header] = cells[i]
-
-                    # 处理和标准化字段
-                    car_info = process_car_info(car_info, batch_number)
-
-                    # 验证数据
-                    is_valid, _ = validate_car_info(car_info)
-                    if is_valid:
-                        cars.append(car_info)
-
-                if progress:
-                    progress.advance(table_task)
-
-    finally:
-        if progress:
-            progress.stop()
-
-    return cars
-
-
 def extract_doc_content(doc_path: str) -> tuple[list[str], list[dict[str, str]]]:
     """
     提取文档中除表格外的内容，并分离额外信息
     """
-    doc = Document(doc_path)
+    doc: DocxDocument = Document(doc_path)
     paragraphs: list[str] = []
     extra_info: list[dict[str, str]] = []
-    current_section = None
+    current_section: Optional[str] = None
     batch_found = False
     batch_number = None
 
     # 额外信息的标识词和对应类型
-    info_types = {
+    info_types: dict[str, str] = {
         "勘误": "勘误",
         "关于": "政策",
         "符合": "说明",
@@ -380,9 +276,9 @@ def extract_doc_content(doc_path: str) -> tuple[list[str], list[dict[str, str]]]
     }
 
     # 用于收集连续的额外信息文本
-    current_extra_info = None
+    current_extra_info: Optional[dict[str, str]] = None
 
-    def save_current_extra_info():
+    def save_current_extra_info() -> None:
         """保存当前的额外信息"""
         nonlocal current_extra_info
         if current_extra_info:
@@ -413,6 +309,7 @@ def extract_doc_content(doc_path: str) -> tuple[list[str], list[dict[str, str]]]
             extra_info.append(current_extra_info)
             current_extra_info = None
 
+    # 遍历文档段落
     for para in doc.paragraphs:
         text = para.text.strip()
         if not text:
@@ -469,12 +366,12 @@ def extract_doc_content(doc_path: str) -> tuple[list[str], list[dict[str, str]]]
     return paragraphs, extra_info
 
 
-def print_docx_content(doc_path: str):
+def print_docx_content(doc_path: str) -> None:
     """
     打印文档内容预览，显示所有元素的详细信息
     """
     try:
-        doc = Document(doc_path)
+        doc: DocxDocument = Document(doc_path)
         console.print(f"\n[bold cyan]文件详细内容: {doc_path}[/bold cyan]")
 
         # 创建一个树形结构
@@ -700,6 +597,12 @@ def cli():
     pass
 
 
+def extract_car_info(doc_path: str, verbose: bool = False) -> List[Dict[str, Any]]:
+    """从docx文件中提取车辆信息"""
+    processor = DocProcessor(doc_path)
+    return processor.process()
+
+
 @cli.command()
 @click.argument(
     "input_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True)
@@ -718,7 +621,9 @@ def cli():
     type=click.Path(exists=True, dir_okay=False),
     help="与指定的CSV文件进行对比",
 )
-def process(input_dir: str, output: str, verbose: bool, preview: bool, compare: str):
+def process(
+    input_dir: str, output: str, verbose: bool, preview: bool, compare: str
+) -> None:
     """处理指定目录下的所有docx文件"""
     doc_files = list(Path(input_dir).glob("*.docx"))
 
@@ -732,9 +637,9 @@ def process(input_dir: str, output: str, verbose: bool, preview: bool, compare: 
             print_docx_content(str(doc_file))
 
     # 处理文件
-    all_cars = []
-    doc_contents = []
-    all_extra_info = []
+    all_cars: List[Dict[str, Any]] = []
+    doc_contents: List[str] = []
+    all_extra_info: List[Dict[str, str]] = []
 
     # 创建进度显示
     with Progress(
@@ -762,7 +667,8 @@ def process(input_dir: str, output: str, verbose: bool, preview: bool, compare: 
                 all_extra_info.extend(extra_info)
 
                 # 处理车辆数据
-                cars = extract_car_info(str(doc_file), verbose)
+                processor = DocProcessor(str(doc_file))
+                cars = processor.process()
                 all_cars.extend(cars)
 
                 # 更新进度
@@ -823,6 +729,96 @@ def process(input_dir: str, output: str, verbose: bool, preview: bool, compare: 
                 console.print(f"[bold red]对比文件时出错: {e}")
     else:
         console.print("[bold red]未找到任何车辆记录")
+
+
+class DocProcessor:
+    """文档处理器类"""
+
+    def __init__(self, doc_path: str):
+        self.doc_path = doc_path
+        self.doc: DocxDocument = Document(doc_path)
+        self.current_category: Optional[str] = None
+        self.current_type: Optional[str] = None
+        self.batch_number: Optional[str] = None
+        self.cars: List[Dict[str, Any]] = []
+
+    def _extract_car_info(
+        self, table_index: int, batch_number: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """从表格中提取车辆信息"""
+        table_cars: List[Dict[str, Any]] = []
+        table = self.doc.tables[table_index]
+
+        if not table or not table.rows:
+            return table_cars
+
+        # 获取表头
+        headers = [cell.text.strip() for cell in table.rows[0].cells]
+
+        # 根据表头判断表格类型
+        table_category, table_type = get_table_type(
+            headers, self.current_category, self.current_type
+        )
+
+        # 处理数据行
+        for row in table.rows[1:]:
+            cells = [cell.text.strip() for cell in row.cells]
+            if not cells or not any(cells):  # 跳过空行
+                continue
+
+            car_info = {
+                "raw_text": " | ".join(cells),
+                "category": table_category,
+                "sub_type": table_type,
+                "car_type": 2 if table_category == "节能型" else 1,
+            }
+
+            # 根据不同表格类型处理字段
+            for i, header in enumerate(headers):
+                if i < len(cells) and cells[i]:
+                    car_info[header] = cells[i]
+
+            # 处理和标准化字段
+            car_info = process_car_info(car_info, batch_number)
+
+            # 验证数据
+            is_valid, _ = validate_car_info(car_info)
+            if is_valid:
+                table_cars.append(car_info)
+
+        return table_cars
+
+    def process(self) -> List[Dict[str, Any]]:
+        """处理文档并返回所有车辆信息"""
+        # 遍历文档中的所有元素
+        for element in self.doc.element.body:
+            # 处理段落
+            if element.tag.endswith("p"):
+                text = element.text.strip()
+                if not text:
+                    continue
+
+                # 提取批次号
+                if not self.batch_number:
+                    self.batch_number = extract_batch_number(text)
+
+                # 更新分类信息
+                if "一、节能型汽车" in text:
+                    self.current_category = "节能型"
+                elif "二、新能源汽车" in text:
+                    self.current_category = "新能源"
+                elif text.startswith("（") and "）" in text:
+                    self.current_type = text.strip()
+
+            # 处理表格
+            elif element.tag.endswith("tbl"):
+                for i, table in enumerate(self.doc.tables):
+                    if table._element is element:
+                        table_cars = self._extract_car_info(i, self.batch_number)
+                        self.cars.extend(table_cars)
+                        break
+
+        return self.cars
 
 
 if __name__ == "__main__":
