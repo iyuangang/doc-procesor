@@ -320,7 +320,7 @@ def extract_doc_content(doc_path: str) -> tuple[list[str], list[dict[str, str]]]
             extracted_batch = extract_batch_number(text)
             if extracted_batch:
                 batch_number = extracted_batch
-                paragraphs.insert(0, text)  # 将批次号信息放在最前面
+                paragraphs.append(text)  # 将批次号信息放在最前面
                 batch_found = True
                 continue
 
@@ -456,73 +456,44 @@ def display_doc_content(
     # 创建文档结构树
     tree = Tree("📄 文档结构")
 
+    def add_to_tree(node: Dict[str, Any], tree_node: Tree) -> None:
+        """递归添加节点到树中"""
+        # 根据节点类型选择样式
+        style_map = {
+            "root": "white",
+            "batch": "bold red",
+            "section": "bold cyan",
+            "subsection": "yellow",
+            "subsubsection": "blue",
+            "item": "magenta",
+            "text": "white",
+        }
+
+        # 获取节点样式
+        node_type = node.get("type", "text")
+        style = style_map.get(node_type, "white")
+
+        # 添加当前节点
+        name = node.get("name", "")
+        if name:
+            child = tree_node.add(f"[{style}]{name}[/{style}]")
+            # 递归添加子节点
+            for sub_node in node.get("children", []):
+                add_to_tree(sub_node, child)
+
+    # 处理文档结构
     if isinstance(doc_structure, dict):
-
-        def add_to_tree(node: Dict[str, Any], tree_node: Tree) -> None:
-            name = node.get("name", "")
-            if name:
-                child = tree_node.add(str(name))
-                for sub_node in node.get("children", []):
-                    add_to_tree(sub_node, child)
-
         add_to_tree(doc_structure, tree)
     else:
-        # 用于跟踪当前的层级结构
-        current_nodes = {0: tree}  # 层级到节点的映射
-        current_batch = None
-
-        for item in doc_structure:
-            # 提取批次号
-            if "第" in item and "批" in item:
-                batch_num = extract_batch_number(item)
-                if batch_num:
-                    current_batch = batch_num
-                    current_nodes = {0: tree}  # 重置层级结构
-                    current_nodes[0] = tree.add(f"[bold red]第{batch_num}批[/bold red]")
-                continue
-
-            # 确定层级
-            level = 0
-            style = "white"
-
-            if item.startswith("附件"):
-                level = 1
-                style = "bold cyan"
-            elif "目录" in item:
-                level = 1
-                style = "bold cyan"
-            elif item.startswith("第") and "部分" in item:
-                level = 1
-                style = "bold cyan"
-            elif item.startswith("一、") or item.startswith("二、"):
-                level = 2
-                style = "bold green"
-            elif item.startswith("（") and any(
-                c in item for c in ["一", "二", "三", "四"]
-            ):
-                level = 3
-                style = "yellow"
-            elif item.startswith(("1.", "2.", "3.", "4.")):
-                level = 4
-                style = "blue"
-            elif item.startswith("（") and item[1].isdigit():
-                level = 5
-                style = "magenta"
-            else:
-                level = 1
-                style = "white"
-
-            # 找到正确的父节点
-            parent_level = max(k for k in current_nodes.keys() if k < level)
-            parent_node = current_nodes[parent_level]
-
-            # 创建新节点
-            current_nodes[level] = parent_node.add(f"[{style}]{item}[/{style}]")
-
-            # 清理更深层级的节点
-            keys_to_remove = [k for k in current_nodes.keys() if k > level]
-            for k in keys_to_remove:
-                del current_nodes[k]
+        # 如果是旧格式的列表，转换为新格式
+        root_node = {
+            "name": "文档内容",
+            "type": "root",
+            "children": [
+                {"name": item, "type": "text", "children": []} for item in doc_structure
+            ],
+        }
+        add_to_tree(root_node, tree)
 
     # 显示文档结构
     console.print("\n")
@@ -625,6 +596,8 @@ def process(
     input_dir: str, output: str, verbose: bool, preview: bool, compare: str
 ) -> None:
     """处理指定目录下的所有docx文件"""
+    NodeType = dict[str, Union[str, list[dict[str, Any]]]]
+
     doc_files = list(Path(input_dir).glob("*.docx"))
 
     if not doc_files:
@@ -637,9 +610,9 @@ def process(
             print_docx_content(str(doc_file))
 
     # 处理文件
-    all_cars: List[Dict[str, Any]] = []
-    doc_contents: List[str] = []
-    all_extra_info: List[Dict[str, str]] = []
+    all_cars: list[dict[str, Any]] = []
+    doc_contents: list[NodeType] = []  # 改为字典列表以支持层级结构
+    all_extra_info: list[dict[str, str]] = []
 
     # 创建进度显示
     with Progress(
@@ -663,7 +636,119 @@ def process(
 
                 # 提取文档内容和额外信息
                 paragraphs, extra_info = extract_doc_content(str(doc_file))
-                doc_contents.extend(paragraphs)
+
+                # 构建层级结构
+                current_batch: Optional[NodeType] = None
+                current_section: Optional[NodeType] = None
+                current_subsection: Optional[NodeType] = None
+                current_subsubsection: Optional[NodeType] = None
+
+                for text in paragraphs:
+                    if "第" in text and "批" in text:
+                        batch_num = extract_batch_number(text)
+                        if batch_num:
+                            children: list[NodeType] = []
+                            current_batch = {
+                                "name": text,
+                                "type": "batch",
+                                "children": children,
+                            }
+                            doc_contents.append(current_batch)
+                            current_section = None
+                            current_subsection = None
+                            current_subsubsection = None
+                    elif (
+                        text.startswith("附件")
+                        or "目录" in text
+                        or (text.startswith("第") and "部分" in text)
+                    ):
+                        children = []
+                        current_section = {
+                            "name": text,
+                            "type": "section",
+                            "children": children,
+                        }
+                        if current_batch:
+                            current_batch["children"].append(current_section)  # type: ignore
+                        else:
+                            doc_contents.append(current_section)
+                        current_subsection = None
+                        current_subsubsection = None
+                    elif text.startswith(("一、", "二、")):
+                        children = []
+                        current_section = {
+                            "name": text,
+                            "type": "section",
+                            "children": children,
+                        }
+                        if current_batch:
+                            current_batch["children"].append(current_section)  # type: ignore
+                        else:
+                            doc_contents.append(current_section)
+                        current_subsection = None
+                        current_subsubsection = None
+                    elif text.startswith("（") and any(
+                        c in text for c in ["一", "二", "三", "四", "五", "六"]
+                    ):
+                        children = []
+                        current_subsection = {
+                            "name": text,
+                            "type": "subsection",
+                            "children": children,
+                        }
+                        if current_section:
+                            current_section["children"].append(current_subsection)  # type: ignore
+                        elif current_batch:
+                            current_batch["children"].append(current_subsection)  # type: ignore
+                        else:
+                            doc_contents.append(current_subsection)
+                        current_subsubsection = None
+                    elif text.startswith(("1.", "2.", "3.", "4.", "5.", "6.")):
+                        children = []
+                        current_subsubsection = {
+                            "name": text,
+                            "type": "subsubsection",
+                            "children": children,
+                        }
+                        if current_subsection:
+                            current_subsection["children"].append(current_subsubsection)  # type: ignore
+                        elif current_section:
+                            current_section["children"].append(current_subsubsection)  # type: ignore
+                        elif current_batch:
+                            current_batch["children"].append(current_subsubsection)  # type: ignore
+                        else:
+                            doc_contents.append(current_subsubsection)
+                    elif text.startswith("（") and text[1].isdigit():
+                        children = []
+                        item: NodeType = {
+                            "name": text,
+                            "type": "item",
+                            "children": children,
+                        }
+                        if current_subsubsection:
+                            current_subsubsection["children"].append(item)  # type: ignore
+                        elif current_subsection:
+                            current_subsection["children"].append(item)  # type: ignore
+                        elif current_section:
+                            current_section["children"].append(item)  # type: ignore
+                        elif current_batch:
+                            current_batch["children"].append(item)  # type: ignore
+                        else:
+                            doc_contents.append(item)
+                    else:
+                        children = []
+                        item = {"name": text, "type": "text", "children": children}
+                        if current_subsubsection:
+                            current_subsubsection["children"].append(item)  # type: ignore
+                        elif current_subsection:
+                            current_subsection["children"].append(item)  # type: ignore
+                        elif current_section:
+                            current_section["children"].append(item)  # type: ignore
+                        elif current_batch:
+                            current_batch["children"].append(item)  # type: ignore
+                        else:
+                            doc_contents.append(item)
+
                 all_extra_info.extend(extra_info)
 
                 # 处理车辆数据
@@ -677,11 +762,8 @@ def process(
             except Exception as e:
                 progress.log(f"[bold red]处理文件 {doc_file} 时出错: {e}")
 
-    # 创建文档结构树
-    doc_tree: Dict[str, Any] = {
-        "name": "文档内容",
-        "children": [{"name": p} for p in doc_contents],
-    }
+    # 创建根节点
+    doc_tree = {"name": "文档内容", "type": "root", "children": doc_contents}
 
     # 显示统计和内容
     if all_cars:
