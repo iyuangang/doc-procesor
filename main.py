@@ -574,17 +574,51 @@ def extract_car_info(doc_path: str, verbose: bool = False) -> List[Dict[str, Any
     return processor.process()
 
 
+@cli.command()
+@click.argument(
+    "input_path",
+    type=click.Path(exists=True),  # 允许文件和目录
+)
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(dir_okay=False),
+    default="cars_output.csv",
+    help="输出CSV文件路径",
+)
+@click.option("-v", "--verbose", is_flag=True, help="显示详细处理信息")
+@click.option("--preview", is_flag=True, help="显示文档内容预览")
+@click.option(
+    "--compare",
+    type=click.Path(exists=True, dir_okay=False),
+    help="与指定的CSV文件进行对比",
+)
+def process(
+    input_path: str, output: str, verbose: bool, preview: bool, compare: str | None
+) -> None:
+    """处理指定的docx文件或目录下的所有docx文件"""
+    process_files(input_path, output, verbose, preview, compare)
+
+
 def process_files(
-    input_dir: str,
+    input_path: str,
     output: str,
     verbose: bool = False,
     preview: bool = False,
     compare: str | None = None,
 ) -> None:
-    """处理指定目录下的所有docx文件的核心逻辑"""
+    """处理指定的docx文件或目录下的所有docx文件的核心逻辑"""
     NodeType = dict[str, Union[str, list[dict[str, Any]]]]
 
-    doc_files = list(Path(input_dir).glob("*.docx"))
+    # 根据输入路径类型确定要处理的文件
+    input_path_obj = Path(input_path)
+    if input_path_obj.is_file():
+        if input_path_obj.suffix.lower() != ".docx":
+            console.print("[bold red]指定的文件不是docx文件")
+            return
+        doc_files = [input_path_obj]
+    else:
+        doc_files = list(input_path_obj.glob("*.docx"))
 
     if not doc_files:
         console.print("[bold red]未找到.docx文件")
@@ -797,31 +831,6 @@ def process_files(
                 console.print(f"[bold red]对比文件时出错: {e}")
     else:
         console.print("[bold red]未找到任何车辆记录")
-
-
-@cli.command()
-@click.argument(
-    "input_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True)
-)
-@click.option(
-    "-o",
-    "--output",
-    type=click.Path(dir_okay=False),
-    default="cars_output.csv",
-    help="输出CSV文件路径",
-)
-@click.option("-v", "--verbose", is_flag=True, help="显示详细处理信息")
-@click.option("--preview", is_flag=True, help="显示文档内容预览")
-@click.option(
-    "--compare",
-    type=click.Path(exists=True, dir_okay=False),
-    help="与指定的CSV文件进行对比",
-)
-def process(
-    input_dir: str, output: str, verbose: bool, preview: bool, compare: str | None
-) -> None:
-    """处理指定目录下的所有docx文件"""
-    process_files(input_dir, output, verbose, preview, compare)
 
 
 class DocProcessor:
