@@ -60,9 +60,13 @@ def cn_to_arabic(cn_num: str) -> str:
         hundreds = int(cn_nums[parts[0]])
         if not parts[1]:  # 整百
             return str(hundreds * 100)
+        # 处理带"零"的情况
+        if parts[1].startswith("零"):
+            ones = int(cn_nums[parts[1][-1]])
+            return str(hundreds * 100 + ones)
         return str(hundreds * 100 + int(cn_to_arabic(parts[1])))
 
-    # 处理十位数
+    # 处理"十"开头的数字
     if cn_num.startswith("十"):
         if len(cn_num) == 1:
             return "10"
@@ -91,7 +95,7 @@ def extract_batch_number(text: str) -> Optional[str]:
         批次号或None
     """
     # 先尝试匹配完整的批次号格式
-    match = re.search(r"第([一二三四五六七八九十百\d]+)批", text)
+    match = re.search(r"第([一二三四五六七八九十百零\d]+)批", text)
     if match:
         num = match.group(1)
         # 如果是纯数字，直接返回
@@ -105,10 +109,10 @@ def extract_batch_number(text: str) -> Optional[str]:
             return None
 
     # 如果没有找到批次号格式，尝试直接转换纯中文数字
-    if any(char in text for char in "一二三四五六七八九十百"):
+    if any(char in text for char in "一二三四五六七八九十百零"):
         try:
             # 提取连续的中文数字
-            match = re.search(r"([一二三四五六七八九十百]+)", text)
+            match = re.search(r"([一二三四五六七八九十百零]+)", text)
             if match:
                 return cn_to_arabic(match.group(1))
         except (KeyError, ValueError):
@@ -313,6 +317,9 @@ def extract_doc_content(doc_path: str) -> tuple[list[str], list[dict[str, str]]]
     for para in doc.paragraphs:
         text = para.text.strip()
         if not text:
+            # 如果遇到空行，保存当前的额外信息
+            if current_extra_info:
+                save_current_extra_info()
             continue
 
         # 检查批次号
@@ -337,23 +344,16 @@ def extract_doc_content(doc_path: str) -> tuple[list[str], list[dict[str, str]]]
         # 识别额外信息
         elif any(marker in text for marker in info_types.keys()):
             # 如果当前文本包含新的标识词，保存之前的信息并创建新的
-            if current_extra_info and not any(
-                marker in current_extra_info["content"] for marker in info_types.keys()
-            ):
+            if current_extra_info:
                 save_current_extra_info()
 
-            # 创建新的额外信息或追加到现有的
+            # 创建新的额外信息
             info_type = next((t for m, t in info_types.items() if m in text), "其他")
-            if current_extra_info is None:
-                current_extra_info = {
-                    "section": current_section or "文档说明",
-                    "type": info_type,
-                    "content": text,
-                }
-            else:
-                current_extra_info["content"] = (
-                    current_extra_info["content"] + " " + text
-                )
+            current_extra_info = {
+                "section": current_section or "文档说明",
+                "type": info_type,
+                "content": text,
+            }
         # 如果当前有未处理的额外信息，将文本追加到内容中
         elif current_extra_info is not None:
             current_extra_info["content"] = current_extra_info["content"] + " " + text
@@ -574,28 +574,14 @@ def extract_car_info(doc_path: str, verbose: bool = False) -> List[Dict[str, Any
     return processor.process()
 
 
-@cli.command()
-@click.argument(
-    "input_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True)
-)
-@click.option(
-    "-o",
-    "--output",
-    type=click.Path(dir_okay=False),
-    default="cars_output.csv",
-    help="输出CSV文件路径",
-)
-@click.option("-v", "--verbose", is_flag=True, help="显示详细处理信息")
-@click.option("--preview", is_flag=True, help="显示文档内容预览")
-@click.option(
-    "--compare",
-    type=click.Path(exists=True, dir_okay=False),
-    help="与指定的CSV文件进行对比",
-)
-def process(
-    input_dir: str, output: str, verbose: bool, preview: bool, compare: str
+def process_files(
+    input_dir: str,
+    output: str,
+    verbose: bool = False,
+    preview: bool = False,
+    compare: str | None = None,
 ) -> None:
-    """处理指定目录下的所有docx文件"""
+    """处理指定目录下的所有docx文件的核心逻辑"""
     NodeType = dict[str, Union[str, list[dict[str, Any]]]]
 
     doc_files = list(Path(input_dir).glob("*.docx"))
@@ -811,6 +797,31 @@ def process(
                 console.print(f"[bold red]对比文件时出错: {e}")
     else:
         console.print("[bold red]未找到任何车辆记录")
+
+
+@cli.command()
+@click.argument(
+    "input_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True)
+)
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(dir_okay=False),
+    default="cars_output.csv",
+    help="输出CSV文件路径",
+)
+@click.option("-v", "--verbose", is_flag=True, help="显示详细处理信息")
+@click.option("--preview", is_flag=True, help="显示文档内容预览")
+@click.option(
+    "--compare",
+    type=click.Path(exists=True, dir_okay=False),
+    help="与指定的CSV文件进行对比",
+)
+def process(
+    input_dir: str, output: str, verbose: bool, preview: bool, compare: str | None
+) -> None:
+    """处理指定目录下的所有docx文件"""
+    process_files(input_dir, output, verbose, preview, compare)
 
 
 class DocProcessor:
