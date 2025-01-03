@@ -22,47 +22,64 @@ from rich.syntax import Syntax
 from rich.text import Text
 from rich.tree import Tree
 import textwrap
+from functools import lru_cache
+import cProfile
+import pstats
+from io import StringIO
+import time
+import psutil
+import os
+from lxml import etree
+import gc
 
 
 # 创建控制台对象
 console = Console()
 
 
+# 预编译正则表达式
+BATCH_NUMBER_PATTERN = re.compile(r"第([一二三四五六七八九十百零\d]+)批")
+WHITESPACE_PATTERN = re.compile(r"\s+")
+CHINESE_NUMBER_PATTERN = re.compile(r"([一二三四五六七八九十百零]+)")
+
+# 中文数字映射表
+CN_NUMS = {
+    "零": "0",
+    "一": "1",
+    "二": "2",
+    "三": "3",
+    "四": "4",
+    "五": "5",
+    "六": "6",
+    "七": "7",
+    "八": "8",
+    "九": "9",
+    "十": "10",
+    "百": "100",
+}
+
+
+@lru_cache(maxsize=1024)
 def cn_to_arabic(cn_num: str) -> str:
     """
-    将中文数字转换为阿拉伯数字
+    将中文数字转换为阿拉伯数字，使用缓存提高性能
     """
     if cn_num.isdigit():
         return cn_num
 
-    cn_nums = {
-        "零": "0",
-        "一": "1",
-        "二": "2",
-        "三": "3",
-        "四": "4",
-        "五": "5",
-        "六": "6",
-        "七": "7",
-        "八": "8",
-        "九": "9",
-        "十": "10",
-        "百": "100",
-    }
-
     # 处理个位数
     if len(cn_num) == 1:
-        return cn_nums.get(cn_num, cn_num)
+        return CN_NUMS.get(cn_num, cn_num)
 
     # 处理"百"开头的数字
     if "百" in cn_num:
         parts = cn_num.split("百")
-        hundreds = int(cn_nums[parts[0]])
+        hundreds = int(CN_NUMS[parts[0]])
         if not parts[1]:  # 整百
             return str(hundreds * 100)
         # 处理带"零"的情况
         if parts[1].startswith("零"):
-            ones = int(cn_nums[parts[1][-1]])
+            ones = int(CN_NUMS[parts[1][-1]])
             return str(hundreds * 100 + ones)
         return str(hundreds * 100 + int(cn_to_arabic(parts[1])))
 
@@ -70,32 +87,27 @@ def cn_to_arabic(cn_num: str) -> str:
     if cn_num.startswith("十"):
         if len(cn_num) == 1:
             return "10"
-        return "1" + cn_nums[cn_num[1]]
+        return "1" + CN_NUMS[cn_num[1]]
 
     # 处理带十的两位数
     if "十" in cn_num:
         parts = cn_num.split("十")
-        tens = cn_nums[parts[0]]
+        tens = CN_NUMS[parts[0]]
         if len(parts) == 1 or not parts[1]:
             return f"{tens}0"
-        ones = cn_nums[parts[1]]
+        ones = CN_NUMS[parts[1]]
         return f"{tens}{ones}"
 
-    return cn_nums.get(cn_num, cn_num)
+    return CN_NUMS.get(cn_num, cn_num)
 
 
+@lru_cache(maxsize=1024)
 def extract_batch_number(text: str) -> Optional[str]:
     """
-    从文本中提取批次号
-
-    Args:
-        text: 文本内容
-
-    Returns:
-        批次号或None
+    从文本中提取批次号，使用缓存提高性能
     """
     # 先尝试匹配完整的批次号格式
-    match = re.search(r"第([一二三四五六七八九十百零\d]+)批", text)
+    match = BATCH_NUMBER_PATTERN.search(text)
     if match:
         num = match.group(1)
         # 如果是纯数字，直接返回
@@ -112,7 +124,7 @@ def extract_batch_number(text: str) -> Optional[str]:
     if any(char in text for char in "一二三四五六七八九十百零"):
         try:
             # 提取连续的中文数字
-            match = re.search(r"([一二三四五六七八九十百零]+)", text)
+            match = CHINESE_NUMBER_PATTERN.search(text)
             if match:
                 return cn_to_arabic(match.group(1))
         except (KeyError, ValueError):
@@ -121,12 +133,13 @@ def extract_batch_number(text: str) -> Optional[str]:
     return None
 
 
+@lru_cache(maxsize=1024)
 def clean_text(text: str) -> str:
     """
-    清理文本内容
+    清理文本内容，使用缓存提高性能
     """
     # 移除多余的空白字符
-    text = re.sub(r"\s+", " ", text.strip())
+    text = WHITESPACE_PATTERN.sub(" ", text.strip())
     # 统一全角字符到半角
     text = text.replace("，", ",").replace("；", ";")
     return text
@@ -600,6 +613,13 @@ def process(
     process_files(input_path, output, verbose, preview, compare)
 
 
+def get_memory_usage() -> str:
+    """获取当前进程的内存使用情况"""
+    process = psutil.Process(os.getpid())
+    memory_info = process.memory_info()
+    return f"{memory_info.rss / 1024 / 1024:.1f}MB"
+
+
 def process_files(
     input_path: str,
     output: str,
@@ -629,9 +649,9 @@ def process_files(
         for doc_file in doc_files:
             print_docx_content(str(doc_file))
 
-    # 处理文件
-    all_cars: list[dict[str, Any]] = []
-    doc_contents: list[NodeType] = []  # 改为字典列表以支持层级结构
+    # 初始化数据存储
+    all_cars_data = []
+    doc_contents: list[NodeType] = []
     all_extra_info: list[dict[str, str]] = []
 
     # 创建进度显示
@@ -645,138 +665,38 @@ def process_files(
         console=console,
         transient=True,
     ) as progress:
-        # 添加总体进度
         main_task = progress.add_task("[cyan]处理文件", total=len(doc_files))
 
-        # 处理每个文件
         for doc_file in doc_files:
             try:
+                start_time = time.time()
                 if verbose:
-                    progress.log(f"[bold]处理文件: {doc_file}")
+                    progress.log(f"[bold]开始处理文件: {doc_file}")
+                    progress.log(f"[dim]当前内存使用: {get_memory_usage()}[/dim]")
 
                 # 提取文档内容和额外信息
                 paragraphs, extra_info = extract_doc_content(str(doc_file))
-
-                # 构建层级结构
-                current_batch: Optional[NodeType] = None
-                current_section: Optional[NodeType] = None
-                current_subsection: Optional[NodeType] = None
-                current_subsubsection: Optional[NodeType] = None
-
-                for text in paragraphs:
-                    if "第" in text and "批" in text:
-                        batch_num = extract_batch_number(text)
-                        if batch_num:
-                            children: list[NodeType] = []
-                            current_batch = {
-                                "name": text,
-                                "type": "batch",
-                                "children": children,
-                            }
-                            doc_contents.append(current_batch)
-                            current_section = None
-                            current_subsection = None
-                            current_subsubsection = None
-                    elif (
-                        text.startswith("附件")
-                        or "目录" in text
-                        or (text.startswith("第") and "部分" in text)
-                    ):
-                        children = []
-                        current_section = {
-                            "name": text,
-                            "type": "section",
-                            "children": children,
-                        }
-                        if current_batch:
-                            current_batch["children"].append(current_section)  # type: ignore
-                        else:
-                            doc_contents.append(current_section)
-                        current_subsection = None
-                        current_subsubsection = None
-                    elif text.startswith(("一、", "二、")):
-                        children = []
-                        current_section = {
-                            "name": text,
-                            "type": "section",
-                            "children": children,
-                        }
-                        if current_batch:
-                            current_batch["children"].append(current_section)  # type: ignore
-                        else:
-                            doc_contents.append(current_section)
-                        current_subsection = None
-                        current_subsubsection = None
-                    elif text.startswith("（") and any(
-                        c in text for c in ["一", "二", "三", "四", "五", "六"]
-                    ):
-                        children = []
-                        current_subsection = {
-                            "name": text,
-                            "type": "subsection",
-                            "children": children,
-                        }
-                        if current_section:
-                            current_section["children"].append(current_subsection)  # type: ignore
-                        elif current_batch:
-                            current_batch["children"].append(current_subsection)  # type: ignore
-                        else:
-                            doc_contents.append(current_subsection)
-                        current_subsubsection = None
-                    elif text.startswith(("1.", "2.", "3.", "4.", "5.", "6.")):
-                        children = []
-                        current_subsubsection = {
-                            "name": text,
-                            "type": "subsubsection",
-                            "children": children,
-                        }
-                        if current_subsection:
-                            current_subsection["children"].append(current_subsubsection)  # type: ignore
-                        elif current_section:
-                            current_section["children"].append(current_subsubsection)  # type: ignore
-                        elif current_batch:
-                            current_batch["children"].append(current_subsubsection)  # type: ignore
-                        else:
-                            doc_contents.append(current_subsubsection)
-                    elif text.startswith("（") and text[1].isdigit():
-                        children = []
-                        item: NodeType = {
-                            "name": text,
-                            "type": "item",
-                            "children": children,
-                        }
-                        if current_subsubsection:
-                            current_subsubsection["children"].append(item)  # type: ignore
-                        elif current_subsection:
-                            current_subsection["children"].append(item)  # type: ignore
-                        elif current_section:
-                            current_section["children"].append(item)  # type: ignore
-                        elif current_batch:
-                            current_batch["children"].append(item)  # type: ignore
-                        else:
-                            doc_contents.append(item)
-                    else:
-                        children = []
-                        item = {"name": text, "type": "text", "children": children}
-                        if current_subsubsection:
-                            current_subsubsection["children"].append(item)  # type: ignore
-                        elif current_subsection:
-                            current_subsection["children"].append(item)  # type: ignore
-                        elif current_section:
-                            current_section["children"].append(item)  # type: ignore
-                        elif current_batch:
-                            current_batch["children"].append(item)  # type: ignore
-                        else:
-                            doc_contents.append(item)
-
                 all_extra_info.extend(extra_info)
 
                 # 处理车辆数据
                 processor = DocProcessor(str(doc_file))
                 cars = processor.process()
-                all_cars.extend(cars)
 
-                # 更新进度
+                # 收集处理后的数据
+                if cars:
+                    all_cars_data.extend(cars)
+
+                # 清理内存
+                del processor
+                gc.collect()
+
+                elapsed = time.time() - start_time
+                if verbose:
+                    progress.log(
+                        f"[bold green]文件 {doc_file} 处理完成，耗时: {elapsed:.2f}秒[/bold green]"
+                    )
+                    progress.log(f"[dim]处理后内存使用: {get_memory_usage()}[/dim]")
+
                 progress.advance(main_task)
 
             except Exception as e:
@@ -786,9 +706,9 @@ def process_files(
     doc_tree = {"name": "文档内容", "type": "root", "children": doc_contents}
 
     # 显示统计和内容
-    if all_cars:
-        # 创建DataFrame
-        df = pd.DataFrame(all_cars)
+    if all_cars_data:
+        # 将收集的数据转换为DataFrame
+        all_cars_df = pd.DataFrame(all_cars_data)
 
         # 设置列的顺序
         base_columns = [
@@ -802,20 +722,23 @@ def process_files(
             "型号",
             "raw_text",
         ]
-        all_columns = list(df.columns)
+        all_columns = list(all_cars_df.columns)
 
         # 将其他列添加到基础列后面
-        existing_columns = [col for col in base_columns if col in df.columns]
+        existing_columns = [col for col in base_columns if col in all_cars_df.columns]
         other_columns = [col for col in all_columns if col not in base_columns]
         final_columns = existing_columns + other_columns
 
         # 重新排列列并保存
-        df = df[final_columns]
-        df.to_csv(output, index=False, encoding="utf-8-sig")
+        all_cars_df = all_cars_df[final_columns]
+        all_cars_df.to_csv(output, index=False, encoding="utf-8-sig")
 
         # 显示统计和内容
         display_statistics(
-            len(df), len(df[df["car_type"] == 2]), len(df[df["car_type"] == 1]), output
+            len(all_cars_df),
+            len(all_cars_df[all_cars_df["car_type"] == 2]),
+            len(all_cars_df[all_cars_df["car_type"] == 1]),
+            output,
         )
         display_doc_content(doc_tree, all_extra_info)
 
@@ -823,7 +746,7 @@ def process_files(
         if compare:
             try:
                 old_df = pd.read_csv(compare, encoding="utf-8-sig")
-                new_models = set(df["型号"].unique())
+                new_models = set(all_cars_df["型号"].unique())
                 old_models = set(old_df["型号"].unique())
 
                 display_comparison(new_models - old_models, old_models - new_models)
@@ -833,65 +756,165 @@ def process_files(
         console.print("[bold red]未找到任何车辆记录")
 
 
+@lru_cache(maxsize=32)
+def load_document(doc_path: str) -> DocxDocument:
+    """缓存加载的文档对象"""
+    return Document(doc_path)
+
+
+def profile_function(func):
+    def wrapper(*args, **kwargs):
+        profile = cProfile.Profile()
+        try:
+            return profile.runcall(func, *args, **kwargs)
+        finally:
+            s = StringIO()
+            stats = pstats.Stats(profile, stream=s).sort_stats("cumulative")
+            stats.print_stats(20)  # 显示前20个最耗时的函数调用
+            console.print(f"\n[bold cyan]性能分析报告:[/bold cyan]\n{s.getvalue()}")
+
+    return wrapper
+
+
 class DocProcessor:
     """文档处理器类"""
 
     def __init__(self, doc_path: str):
         self.doc_path = doc_path
-        self.doc: DocxDocument = Document(doc_path)
+        self.start_time = time.time()
+        self.doc: DocxDocument = load_document(doc_path)
         self.current_category: Optional[str] = None
         self.current_type: Optional[str] = None
         self.batch_number: Optional[str] = None
+        self._table_cache: Dict[int, List[Dict[str, Any]]] = {}
         self.cars: List[Dict[str, Any]] = []
+        self._processing_times: Dict[str, float] = {}
+        self._chunk_size = 1000  # 分块处理的大小
+
+    def _extract_table_cells_fast(self, table) -> List[List[str]]:
+        """使用优化的方式提取表格内容"""
+        rows = []
+        for row in table._tbl.tr_lst:  # 直接访问内部XML结构
+            cells = []
+            for cell in row.tc_lst:
+                # 直接获取文本内容
+                text = "".join(node.text for node in cell.xpath(".//w:t"))
+                cells.append(text.strip())
+            if cells:  # 只添加非空行
+                rows.append(cells)
+        return rows
 
     def _extract_car_info(
         self, table_index: int, batch_number: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """从表格中提取车辆信息"""
+        """从表格中提取车辆信息，使用优化的处理方式"""
+        # 检查缓存
+        if table_index in self._table_cache:
+            return self._table_cache[table_index]
+
+        start_time = time.time()
         table_cars: List[Dict[str, Any]] = []
         table = self.doc.tables[table_index]
 
         if not table or not table.rows:
             return table_cars
 
-        # 获取表头
-        headers = [cell.text.strip() for cell in table.rows[0].cells]
+        # 使用快速方法提取所有单元格内容
+        all_rows = self._extract_table_cells_fast(table)
+        if not all_rows:
+            return table_cars
+
+        # 获取并处理表头
+        headers = all_rows[0]
+        if not headers or not any(headers):
+            return table_cars
 
         # 根据表头判断表格类型
         table_category, table_type = get_table_type(
             headers, self.current_category, self.current_type
         )
 
-        # 处理数据行
-        for row in table.rows[1:]:
-            cells = [cell.text.strip() for cell in row.cells]
-            if not cells or not any(cells):  # 跳过空行
-                continue
+        # 预先创建基础信息
+        base_info = {
+            "category": table_category,
+            "sub_type": table_type,
+            "car_type": 2 if table_category == "节能型" else 1,
+            "batch": batch_number,
+        }
 
-            car_info = {
-                "raw_text": " | ".join(cells),
-                "category": table_category,
-                "sub_type": table_type,
-                "car_type": 2 if table_category == "节能型" else 1,
-            }
+        total_rows = len(all_rows) - 1
+        if total_rows > 100:
+            console.print(f"[dim]开始处理大表格，共 {total_rows} 行[/dim]")
 
-            # 根据不同表格类型处理字段
-            for i, header in enumerate(headers):
-                if i < len(cells) and cells[i]:
-                    car_info[header] = cells[i]
+        # 分块处理数据行
+        for chunk_start in range(1, len(all_rows), self._chunk_size):
+            chunk_end = min(chunk_start + self._chunk_size, len(all_rows))
+            chunk_rows = all_rows[chunk_start:chunk_end]
 
-            # 处理和标准化字段
-            car_info = process_car_info(car_info, batch_number)
+            # 批量处理当前块的数据行
+            for cells in chunk_rows:
+                if len(cells) != len(headers):  # 跳过格式不匹配的行
+                    continue
 
-            # 验证数据
-            is_valid, _ = validate_car_info(car_info)
-            if is_valid:
-                table_cars.append(car_info)
+                # 创建新的字典，避免引用同一个对象
+                car_info = base_info.copy()
+                car_info["raw_text"] = " | ".join(cells)
+
+                # 使用zip优化字段映射
+                car_info.update(
+                    {
+                        header: clean_text(value)
+                        for header, value in zip(headers, cells)
+                        if value and header
+                    }
+                )
+
+                # 处理车辆信息
+                car_info = process_car_info(car_info, batch_number)
+
+                # 验证数据
+                is_valid, _ = validate_car_info(car_info)
+                if is_valid:
+                    table_cars.append(car_info)
+
+            if total_rows > 100:
+                progress = (chunk_end - 1) / total_rows * 100
+                console.print(
+                    f"[dim]处理进度: {progress:.1f}% ({chunk_end-1}/{total_rows})[/dim]"
+                )
+
+            # 主动触发垃圾回收
+            if len(table_cars) > 5000:
+                gc.collect()
+
+        # 缓存结果
+        self._table_cache[table_index] = table_cars
+
+        # 记录处理时间
+        elapsed = time.time() - start_time
+        if total_rows > 100:
+            console.print(
+                f"[dim]表格 {table_index} 处理了 {total_rows} 行，耗时: {elapsed:.2f}秒[/dim]"
+            )
 
         return table_cars
 
+    def _log_time(self, operation: str) -> None:
+        """记录操作耗时"""
+        current_time = time.time()
+        elapsed = current_time - self.start_time
+        self._processing_times[operation] = elapsed
+        if operation != "init":
+            console.print(f"[dim]{operation} 耗时: {elapsed:.2f}秒[/dim]")
+        self.start_time = current_time
+
+    @profile_function
     def process(self) -> List[Dict[str, Any]]:
         """处理文档并返回所有车辆信息"""
+        self._log_time("init")
+        table_count = 0
+        row_count = 0
+
         # 遍历文档中的所有元素
         for element in self.doc.element.body:
             # 处理段落
@@ -914,12 +937,17 @@ class DocProcessor:
 
             # 处理表格
             elif element.tag.endswith("tbl"):
+                table_count += 1
                 for i, table in enumerate(self.doc.tables):
                     if table._element is element:
+                        if table.rows:
+                            row_count += len(table.rows)
                         table_cars = self._extract_car_info(i, self.batch_number)
                         self.cars.extend(table_cars)
                         break
 
+        self._log_time("process")
+        console.print(f"[dim]处理了 {table_count} 个表格，共 {row_count} 行[/dim]")
         return self.cars
 
 
