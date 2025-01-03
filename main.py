@@ -152,11 +152,17 @@ def validate_car_info(car_info: dict[str, Any]) -> tuple[bool, str]:
     Returns:
         (是否有效, 错误信息)
     """
-    required_fields = ["企业名称", "型号"]
-    for field in required_fields:
-        if field not in car_info or not car_info[field]:
-            return False, f"缺少必要字段: {field}"
+    # 检查是否为表头或空行
+    if not car_info or not any(str(value).strip() for value in car_info.values()):
+        return False, "空行"
 
+    # 检查是否为合计行
+    if any(
+        str(value).strip().startswith(("合计", "总计")) for value in car_info.values()
+    ):
+        return False, "合计行"
+
+    # 检查车型标识
     if "car_type" not in car_info:
         return False, "缺少车型标识"
 
@@ -240,13 +246,13 @@ def process_car_info(
         car_info["batch"] = batch_number
 
     # 合并型号字段
-    model_fields = ["产品型号", "车辆型号"]
+    model_fields = ["产品型号", "车辆型号", "型号"]
     model_values = []
     for field in model_fields:
         if field in car_info:
-            value = car_info.pop(field)
-            if value:
-                model_values.append(clean_text(value))
+            value = car_info.pop(field) if field != "型号" else car_info.get(field)
+            if value and str(value).strip():
+                model_values.append(clean_text(str(value)))
 
     if model_values:
         car_info["型号"] = model_values[0]  # 使用第一个非空的型号
@@ -255,15 +261,18 @@ def process_car_info(
     field_mapping = {
         "通用名称": "品牌",
         "商标": "品牌",
+        "生产企业": "企业名称",
+        "企业": "企业名称",
     }
 
+    # 处理字段映射
     for old_field, new_field in field_mapping.items():
         if old_field in car_info:
             value = car_info.pop(old_field)
-            if value and new_field not in car_info:
-                car_info[new_field] = clean_text(value)
+            if value and str(value).strip():
+                car_info[new_field] = clean_text(str(value))
 
-    # 清理其他字段的文本
+    # 清理其他字段的文本，但保留所有值
     for key in car_info:
         if isinstance(car_info[key], str):
             car_info[key] = clean_text(car_info[key])
@@ -779,7 +788,7 @@ def profile_function(func):
 class DocProcessor:
     """文档处理器类"""
 
-    def __init__(self, doc_path: str):
+    def __init__(self, doc_path: str, verbose: bool = True):
         self.doc_path = doc_path
         self.start_time = time.time()
         self.doc: DocxDocument = load_document(doc_path)
@@ -790,6 +799,7 @@ class DocProcessor:
         self.cars: List[Dict[str, Any]] = []
         self._processing_times: Dict[str, float] = {}
         self._chunk_size = 1000  # 分块处理的大小
+        self.verbose = verbose  # 添加详细日志开关
 
     def _extract_table_cells_fast(self, table) -> List[List[str]]:
         """使用优化的方式提取表格内容"""
@@ -825,8 +835,8 @@ class DocProcessor:
             return table_cars
 
         # 获取并处理表头
-        headers = all_rows[0]
-        if not headers or not any(headers):
+        headers = [clean_text(cell) for cell in all_rows[0] if cell]
+        if not headers:
             return table_cars
 
         # 根据表头判断表格类型
@@ -852,30 +862,35 @@ class DocProcessor:
             chunk_rows = all_rows[chunk_start:chunk_end]
 
             # 批量处理当前块的数据行
-            for cells in chunk_rows:
-                if len(cells) != len(headers):  # 跳过格式不匹配的行
+            for row_idx, cells in enumerate(chunk_rows, chunk_start):
+                # 跳过空行
+                if not any(str(cell).strip() for cell in cells):
+                    continue
+
+                # 检查单元格数量是否匹配
+                if len(cells) != len(headers):
+                    if self.verbose:
+                        console.print(
+                            f"[yellow]表格 {table_index + 1} 第 {row_idx} 行格式不匹配: "
+                            f"预期 {len(headers)} 列，实际 {len(cells)} 列[/yellow]"
+                        )
                     continue
 
                 # 创建新的字典，避免引用同一个对象
                 car_info = base_info.copy()
-                car_info["raw_text"] = " | ".join(cells)
+                car_info["raw_text"] = " | ".join(str(cell) for cell in cells)
 
-                # 使用zip优化字段映射
+                # 使用zip优化字段映射，同时清理文本
                 car_info.update(
                     {
-                        header: clean_text(value)
+                        header: clean_text(str(value))
                         for header, value in zip(headers, cells)
-                        if value and header
                     }
                 )
 
                 # 处理车辆信息
                 car_info = process_car_info(car_info, batch_number)
-
-                # 验证数据
-                is_valid, _ = validate_car_info(car_info)
-                if is_valid:
-                    table_cars.append(car_info)
+                table_cars.append(car_info)
 
             if total_rows > 100:
                 progress = (chunk_end - 1) / total_rows * 100
@@ -890,11 +905,12 @@ class DocProcessor:
         # 缓存结果
         self._table_cache[table_index] = table_cars
 
-        # 记录处理时间
+        # 记录处理时间和统计信息
         elapsed = time.time() - start_time
         if total_rows > 100:
             console.print(
-                f"[dim]表格 {table_index} 处理了 {total_rows} 行，耗时: {elapsed:.2f}秒[/dim]"
+                f"[dim]表格 {table_index + 1} 处理了 {total_rows} 行，"
+                f"数据 {len(table_cars)} 行，耗时: {elapsed:.2f}秒[/dim]"
             )
 
         return table_cars
