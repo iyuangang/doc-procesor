@@ -839,6 +839,14 @@ class DocProcessor:
         if not headers:
             return table_cars
 
+        # 显示表格结构信息
+        if self.verbose:
+            console.print(f"\n[cyan]表格 {table_index + 1} 结构信息:[/cyan]")
+            console.print(f"表头: {headers}")
+            console.print(f"总行数: {len(all_rows)}")
+            if len(all_rows) > 1:
+                console.print(f"第一行数据示例: {all_rows[1]}")
+
         # 根据表头判断表格类型
         table_category, table_type = get_table_type(
             headers, self.current_category, self.current_type
@@ -867,14 +875,19 @@ class DocProcessor:
                 if not any(str(cell).strip() for cell in cells):
                     continue
 
-                # 检查单元格数量是否匹配
+                # 记录列数不匹配的情况，但仍然处理数据
                 if len(cells) != len(headers):
                     if self.verbose:
                         console.print(
-                            f"[yellow]表格 {table_index + 1} 第 {row_idx} 行格式不匹配: "
+                            f"[yellow]表格 {table_index + 1} 第 {row_idx} 行列数不匹配: "
                             f"预期 {len(headers)} 列，实际 {len(cells)} 列[/yellow]"
                         )
-                    continue
+                        console.print(f"行内容: {cells}")
+                    # 调整单元格数量以匹配表头
+                    if len(cells) > len(headers):
+                        cells = cells[: len(headers)]
+                    else:
+                        cells.extend([""] * (len(headers) - len(cells)))
 
                 # 创建新的字典，避免引用同一个对象
                 car_info = base_info.copy()
@@ -907,7 +920,7 @@ class DocProcessor:
 
         # 记录处理时间和统计信息
         elapsed = time.time() - start_time
-        if total_rows > 100:
+        if total_rows > 100 or len(table_cars) > 0:
             console.print(
                 f"[dim]表格 {table_index + 1} 处理了 {total_rows} 行，"
                 f"数据 {len(table_cars)} 行，耗时: {elapsed:.2f}秒[/dim]"
