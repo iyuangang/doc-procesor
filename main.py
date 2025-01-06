@@ -31,6 +31,7 @@ import psutil
 import os
 from lxml import etree
 import gc
+import logging
 
 
 # 创建控制台对象
@@ -145,87 +146,106 @@ def clean_text(text: str) -> str:
     return text
 
 
-def validate_car_info(car_info: dict[str, Any]) -> tuple[bool, str]:
-    """
-    验证车辆信息的完整性和正确性
-
-    Returns:
-        (是否有效, 错误信息)
-    """
-    # 检查是否为表头或空行
+def validate_car_info(
+    car_info: dict[str, Any],
+) -> tuple[bool, str, Optional[dict[str, Any]]]:
+    """验证并尝试修复车辆信息"""
+    # 基本验证
     if not car_info or not any(str(value).strip() for value in car_info.values()):
-        return False, "空行"
+        return False, "空行", None
 
     # 检查是否为合计行
     if any(
         str(value).strip().startswith(("合计", "总计")) for value in car_info.values()
     ):
-        return False, "合计行"
+        return False, "合计行", None
 
-    # 检查车型标识
-    if "car_type" not in car_info:
-        return False, "缺少车型标识"
+    # 尝试修复数据
+    fixed_info = car_info.copy()
 
-    if car_info["car_type"] not in [1, 2]:
-        return False, f"无效的车型标识: {car_info['car_type']}"
+    # 1. 处理变速器信息
+    if "型式" in fixed_info and "档位数" in fixed_info:
+        fixed_info["变速器"] = f"{fixed_info.pop('型式')} {fixed_info.pop('档位数')}"
 
-    return True, ""
+    # 2. 标准化数值字段
+    numeric_fields = ["排量(ml)", "整车整备质量(kg)", "综合燃料消耗量（L/100km）"]
+    for field in numeric_fields:
+        if field in fixed_info:
+            value = fixed_info[field]
+            if isinstance(value, str):
+                # 处理多个数值的情况（如范围值）
+                if "/" in value:
+                    values = [float(v.strip()) for v in value.split("/") if v.strip()]
+                    fixed_info[field] = min(values)  # 使用最小值
+                else:
+                    try:
+                        fixed_info[field] = float(value.replace("，", ","))
+                    except ValueError:
+                        logging.warning(f"无法转换数值: {field}={value}")
+
+    # 3. 确保必要字段存在
+    required_fields = ["car_type", "category", "sub_type"]
+    for field in required_fields:
+        if field not in fixed_info:
+            return False, f"缺少必要字段: {field}", None
+
+    return True, "", fixed_info
 
 
 def get_table_type(
     headers: List[str], current_category: Optional[str], current_type: Optional[str]
 ) -> tuple[str, str]:
-    """
-    根据表头判断表格类型
-    """
-    header_set: Set[str] = set(headers)
+    """根据表头判断表格类型，增加异常处理"""
+    # 标准化表头
+    normalized_headers = [h.strip().lower() for h in headers]
 
-    # 如果没有当前分类或类型，使用默认值
-    current_category = current_category or "未知"
-    current_type = current_type or "未知"
+    # 验证必要的列是否存在
+    required_columns = {"序号", "企业名称"}
+    missing_columns = required_columns - set(normalized_headers)
+    if missing_columns:
+        raise ValueError(f"表格缺少必要的列: {missing_columns}")
 
-    # 定义各类型的特征字段
-    type_features: Dict[tuple[str, str], Dict[str, Any]] = {
-        ("节能型", "（一）乘用车"): {
+    # 处理特殊的表头组合
+    if "型式" in normalized_headers and "档位数" in normalized_headers:
+        # 合并为变速器列
+        idx = normalized_headers.index("型式")
+        normalized_headers[idx] = "变速器"
+        normalized_headers.pop(idx + 1)
+
+    header_set: Set[str] = set(normalized_headers)
+
+    # 使用更严格的类型判断规则
+    type_rules = [
+        {
+            "category": "节能型",
+            "type": "（一）乘用车",
             "required": {"排量(ml)", "综合燃料消耗量"},
-            "optional": {"DCT", "档位数"},
+            "optional": {"变速器", "dct", "档位数"},
         },
-        ("节能型", "（二）轻型商用车"): {
-            "required": {"燃料种类"},
-            "condition": lambda h: "CNG" in str(h),
-        },
-        ("节能型", "（三）重型商用车"): {
-            "required": {"燃料种类"},
-            "condition": lambda h: "LNG" in str(h),
-        },
-        ("新能源", "（一）插电式混合动力乘用车"): {
-            "required": {"纯电动续驶里程", "燃料消耗量", "通用名称"}
-        },
-        ("新能源", "（二）纯电动商用车"): {
-            "required": {"纯电动续驶里程", "动力蓄电池总能量"}
-        },
-        ("新能源", "（三）插电式混合动力商用车"): {
-            "required": {"纯电动续驶里程", "燃料消耗量"},
-            "exclude": {"通用名称"},
-        },
-        ("新能源", "（四）燃料电池商用车"): {"required": {"燃料电池系统额定功率"}},
-    }
+        # ... 其他类型规则
+    ]
 
-    # 检查每种类型的特征
-    for (category, type_name), features in type_features.items():
-        required = features.get("required", set())
-        optional = features.get("optional", set())
-        condition = features.get("condition", lambda _: True)
-        exclude = features.get("exclude", set())
+    # 记录匹配的规则
+    matched_rules = []
+    for rule in type_rules:
+        if rule["required"].issubset(header_set):
+            if "optional" not in rule or any(
+                opt in header_set for opt in rule["optional"]
+            ):
+                matched_rules.append(rule)
 
-        if (
-            required & header_set == required  # 必需字段都存在
-            and not (exclude & header_set)  # 排除字段不存在
-            and condition(headers)  # 满足额外条件
-        ):
-            return category, type_name
+    if len(matched_rules) == 1:
+        return matched_rules[0]["category"], matched_rules[0]["type"]
+    elif len(matched_rules) > 1:
+        # 记录多重匹配情况
+        logging.warning(f"表头 {headers} 匹配多个类型: {matched_rules}")
+        # 使用当前上下文选择最可能的类型
+        return current_category or matched_rules[0][
+            "category"
+        ], current_type or matched_rules[0]["type"]
 
-    return current_category, current_type
+    # 如果没有匹配规则，保持当前类型
+    return current_category or "未知", current_type or "未知"
 
 
 def process_car_info(
@@ -802,17 +822,80 @@ class DocProcessor:
         self.verbose = verbose  # 添加详细日志开关
 
     def _extract_table_cells_fast(self, table) -> List[List[str]]:
-        """使用优化的方式提取表格内容"""
+        """优化的表格提取方法"""
         rows = []
-        for row in table._tbl.tr_lst:  # 直接访问内部XML结构
+        header_processed = False
+        last_company = ""
+        last_brand = ""
+
+        for row in table._tbl.tr_lst:
             cells = []
             for cell in row.tc_lst:
-                # 直接获取文本内容
                 text = "".join(node.text for node in cell.xpath(".//w:t"))
                 cells.append(text.strip())
-            if cells:  # 只添加非空行
-                rows.append(cells)
+
+            if not header_processed:
+                # 处理表头合并
+                processed_headers = self._process_merged_headers(cells)
+                rows.append(processed_headers)
+                header_processed = True
+                continue
+
+            # 处理数据行
+            processed_row = self._process_data_row(cells, last_company, last_brand)
+            if processed_row:
+                # 更新上一个有效的企业名称和品牌
+                if processed_row[1]:  # 企业名称列
+                    last_company = processed_row[1]
+                if processed_row[2]:  # 品牌/通用名称为空
+                    last_brand = processed_row[2]
+                rows.append(processed_row)
+
         return rows
+
+    def _process_merged_headers(self, headers: List[str]) -> List[str]:
+        """处理合并的表头"""
+        processed = []
+        i = 0
+        while i < len(headers):
+            if (
+                headers[i] == "型式"
+                and i + 1 < len(headers)
+                and headers[i + 1] == "档位数"
+            ):
+                processed.append("变速器")
+                i += 2
+            else:
+                processed.append(headers[i])
+                i += 1
+        return processed
+
+    def _process_data_row(
+        self, row: List[str], last_company: str, last_brand: str
+    ) -> Optional[List[str]]:
+        """处理数据行，处理空值和延续性"""
+        # 跳过全空行
+        if not any(cell.strip() for cell in row):
+            return None
+
+        # 处理合计行
+        if any(cell.strip().startswith(("合计", "总计")) for cell in row):
+            return None
+
+        processed = []
+        for i, cell in enumerate(row):
+            value = cell.strip()
+            if i == 1 and not value:  # 企业名称为空
+                processed.append(last_company)
+            elif i == 2 and not value:  # 品牌/通用名称为空
+                processed.append(last_brand)
+            elif "型式" in value and "档位数" in value:  # 处理变速器信息
+                parts = value.split()
+                processed.append(f"{parts[0]} {parts[1]}")
+            else:
+                processed.append(value)
+
+        return processed
 
     def _extract_car_info(
         self, table_index: int, batch_number: Optional[str] = None
