@@ -1,4 +1,3 @@
-python-docx
-pandas
-click
-rich
+pandas>=2.0.0
+python-docx>=0.8.11
+rich>=13.0.0
