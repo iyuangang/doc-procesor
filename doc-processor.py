@@ -1,15 +1,16 @@
 from pathlib import Path
-import pandas as pd
+import pandas as pd  # type: ignore
 from docx import Document
 from docx.document import Document as DocxDocument
 from docx.table import Table as DocxTable
 import re
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Set, Tuple
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 import time
 import gc
 from functools import lru_cache
+import logging
 
 # 创建控制台对象用于美化输出
 console = Console()
@@ -102,7 +103,7 @@ class DocProcessor:
             "序号",
             "企业名称",
             "品牌",
-            "车辆型号",
+            "型号",
             "排量(ml)",
             "额定载客人数(人)",
             "变速器",
@@ -115,7 +116,6 @@ class DocProcessor:
             "最大设计总质量(kg)",
             "综合工况燃料消耗量(L/100km)",
             "准拖挂车总质量(kg)",
-            "产品型号",
             "纯电动续驶里程(km)",
             "燃料消耗量(L/100km)",
             "发动机排量(mL)",
@@ -171,8 +171,10 @@ class DocProcessor:
     def _validate_row_data(self, row_dict: Dict[str, Any]) -> bool:
         """验证行数据的有效性"""
         # 必填字段验证
-        required_fields = ["表格编号", "分类", "car_type", "batch", "序号", "企业名称"]
-        if not all(row_dict.get(field) for field in required_fields):
+        required_fields = ["表格编号", "分类", "car_type", "batch"]
+        missing_fields = [field for field in required_fields if not row_dict.get(field)]
+        if missing_fields:
+            logging.debug(f"行数据缺少必填字段: {missing_fields}, 数据: {row_dict}")
             return False
 
         # 数值字段验证
@@ -191,8 +193,16 @@ class DocProcessor:
                 try:
                     # 处理可能包含±的数值
                     value = row_dict[field].split("±")[0]
+                    # 处理可能包含/的数值，取第一个值
+                    if "/" in value:
+                        value = value.split("/")[0]
+                    # 处理可能包含CLTC的数值
+                    value = value.replace("（CLTC）", "").replace("(CLTC)", "")
                     float(value.replace(",", ""))
                 except ValueError:
+                    logging.debug(
+                        f"字段 {field} 的值 '{row_dict[field]}' 无法转换为数值"
+                    )
                     row_dict[field] = ""  # 无效数值置空
 
         return True
@@ -271,6 +281,10 @@ class DocProcessor:
                 "[cyan]处理表格数据...", total=len(self.tables_info)
             )
 
+            # 添加批次处理调试信息
+            batch_debug: Set[str] = set()
+            row_counts: Dict[str, int] = {}  # 用于跟踪每个批次的行数
+
             for table_info in self.tables_info:
                 if not table_info.get("data_rows"):
                     progress.advance(task)
@@ -278,7 +292,16 @@ class DocProcessor:
 
                 headers = table_info["headers"]
                 batch = table_info.get("batch")
-                if not batch:
+
+                # 调试信息：记录每个表格的批次号
+                if batch:
+                    batch_debug.add(str(batch))
+                    console.print(f"[cyan]处理批次 {batch} 的表格数据[/cyan]")
+                    # 初始化或更新批次行数计数
+                    row_counts[str(batch)] = row_counts.get(str(batch), 0) + len(
+                        table_info.get("data_rows", [])
+                    )
+                else:
                     console.print(
                         f"[yellow]警告: 表格 {table_info['table_index']} 没有批次号[/yellow]"
                     )
@@ -290,7 +313,7 @@ class DocProcessor:
                         "表格编号": table_info["table_index"],
                         "分类": table_info["category"],
                         "car_type": table_info["car_type"],
-                        "batch": batch,  # 确保批次号被正确设置
+                        "batch": str(batch),  # 确保批次号是字符串类型
                     }
 
                     # 添加表格数据
@@ -298,6 +321,11 @@ class DocProcessor:
                         if i < len(row):
                             value = self._clean_text(row[i])
                             row_dict[header] = value
+
+                    # 合并车辆型号和产品型号
+                    vehicle_model = row_dict.pop("车辆型号", "")
+                    product_model = row_dict.pop("产品型号", "")
+                    row_dict["型号"] = vehicle_model or product_model
 
                     # 确保所有标准字段都存在
                     for header in self.standard_headers:
@@ -310,9 +338,38 @@ class DocProcessor:
 
                 progress.advance(task)
 
+            # 打印批次处理汇总
+            console.print("\n[bold cyan]批次处理汇总:[/bold cyan]")
+            console.print(f"处理的批次: {sorted(batch_debug)}")
+            console.print("\n[bold cyan]批次行数统计:[/bold cyan]")
+            for batch, count in sorted(row_counts.items()):
+                console.print(f"批次 {batch}: {count}行")
+
         # 转换为DataFrame并保存
         if all_data:
             df = pd.DataFrame(all_data)
+
+            # 检查并展示型号为空的数据
+            empty_model_data = df[df["型号"].isna() | (df["型号"] == "")]
+            if not empty_model_data.empty:
+                console.print("\n[red]警告: 发现型号为空的数据:[/red]")
+                console.print(f"共有 {len(empty_model_data)} 条记录的型号为空")
+                console.print("\n型号为空的数据示例:")
+                display_columns = ["表格编号", "batch", "企业名称", "品牌", "产品名称"]
+                for _, row in empty_model_data.iterrows():
+                    console.print(
+                        f"表格 {row['表格编号']}, "
+                        f"批次 {row['batch']}, "
+                        f"企业: {row['企业名称']}, "
+                        f"品牌: {row['品牌']}, "
+                        f"产品名称: {row['产品名称']}"
+                    )
+
+            # 剔除型号为空的数据
+            df = df[df["型号"].notna() & (df["型号"] != "")]
+            console.print(
+                f"\n[green]剔除型号为空的数据后，剩余 {len(df)} 条记录[/green]"
+            )
 
             # 确保批次号是整数类型
             df["batch"] = (
@@ -327,6 +384,22 @@ class DocProcessor:
             for col in df.columns:
                 if pd.api.types.is_object_dtype(df[col]):
                     df[col] = df[col].apply(self._clean_text)
+
+            # 保存前检查批次分布
+            batch_counts = df["batch"].value_counts().sort_index()
+            console.print("\n[bold cyan]保存前批次分布:[/bold cyan]")
+            for batch, count in batch_counts.items():
+                console.print(f"第{int(batch)}批: {count}行")
+
+            # 检查是否有批次丢失
+            processed_batches = set(batch_counts.index)
+            missing_batches = set(int(b) for b in batch_debug) - processed_batches
+            if missing_batches:
+                console.print("\n[red]警告: 以下批次在保存前丢失:[/red]")
+                for batch in sorted(missing_batches):
+                    console.print(
+                        f"第{batch}批 (原始记录数: {row_counts.get(str(batch), 0)}行)"
+                    )
 
             # 保存文件
             df.to_csv(output_path, index=False, encoding="utf-8-sig")
