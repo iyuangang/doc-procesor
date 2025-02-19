@@ -4,7 +4,7 @@ from docx import Document  # type: ignore
 from docx.document import Document as DocxDocument
 from docx.table import Table as DocxTable
 import re
-from typing import Dict, Any, Optional, List, Union, Set
+from typing import Dict, Any, Optional, List, Union, Set, Tuple
 import click
 from rich.console import Console
 from rich.table import Table
@@ -22,7 +22,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 from rich.tree import Tree
 import textwrap
-from functools import lru_cache
+from functools import lru_cache, partial
 import cProfile
 import pstats
 from io import StringIO
@@ -32,6 +32,13 @@ import os
 from lxml import etree
 import gc
 import logging
+import multiprocessing as mp
+import tempfile
+import shutil
+import yaml
+import logging.config
+from datetime import datetime
+from dataclasses import dataclass, field
 
 
 # 创建控制台对象
@@ -409,199 +416,308 @@ def extract_doc_content(doc_path: str) -> tuple[list[str], list[dict[str, str]]]
 
 
 def print_docx_content(doc_path: str) -> None:
-    """
-    打印文档内容预览，显示所有元素的详细信息
-    """
+    """打印文档内容预览，显示所有元素的详细信息"""
     try:
         doc: DocxDocument = Document(doc_path)
-        console.print(f"\n[bold cyan]文件详细内容: {doc_path}[/bold cyan]")
+        console.print(
+            Panel(
+                f"[bold cyan]文件详细内容: {doc_path}[/bold cyan]", border_style="cyan"
+            )
+        )
 
         # 创建一个树形结构
-        tree = Tree(f"📄 {Path(doc_path).name}")
+        tree = Tree(f"📄 {Path(doc_path).name}", style="bold blue")
 
         # 添加段落内容
-        paragraphs_node = tree.add("[bold]📝 段落内容[/bold]")
+        paragraphs_node = tree.add("[bold magenta]📝 段落内容[/bold magenta]")
         for i, para in enumerate(doc.paragraphs, 1):
             text = para.text.strip()
             if text:
-                # 显示段落编号、样式和内容
                 style_name = para.style.name if para.style else "默认样式"
                 para_node = paragraphs_node.add(
                     f"[blue]段落 {i}[/blue] ([yellow]{style_name}[/yellow])"
                 )
-                # 处理段落内容，检测特殊标记
                 if "批" in text:
-                    para_node.add(f"[bold red]批次信息: {text}[/bold red]")
+                    para_node.add(f"🔖 [bold red]{text}[/bold red]")
                 elif text.startswith(("一、", "二、")):
-                    para_node.add(f"[bold green]主分类: {text}[/bold green]")
+                    para_node.add(f"📌 [bold green]{text}[/bold green]")
                 elif text.startswith("（"):
-                    para_node.add(f"[bold yellow]子分类: {text}[/bold yellow]")
+                    para_node.add(f"📎 [bold yellow]{text}[/bold yellow]")
                 elif any(
                     marker in text
                     for marker in ["勘误", "关于", "符合", "技术要求", "自动转入"]
                 ):
-                    para_node.add(f"[bold magenta]额外信息: {text}[/bold magenta]")
+                    para_node.add(f"ℹ️ [bold magenta]{text}[/bold magenta]")
                 else:
                     para_node.add(Text(textwrap.shorten(text, width=100)))
 
         # 添加表格内容
-        tables_node = tree.add("[bold]📊 表格内容[/bold]")
+        tables_node = tree.add("[bold cyan]📊 表格内容[/bold cyan]")
         for i, table in enumerate(doc.tables, 1):
             if table.rows:
                 table_node = tables_node.add(
                     f"[blue]表格 {i}[/blue] ({len(table.rows)}行 x {len(table.rows[0].cells)}列)"
                 )
 
-                # 显示表头
-                headers = [cell.text.strip() for cell in table.rows[0].cells]
-                table_node.add("[yellow]表头:[/yellow] " + " | ".join(headers))
+                # 创建表格预览
+                preview_table = Table(
+                    show_header=True,
+                    header_style="bold green",
+                    border_style="blue",
+                    title=f"表格 {i} 预览",
+                    title_style="bold cyan",
+                )
 
-                # 显示数据行预览
-                data_node = table_node.add("[green]数据预览:[/green]")
+                # 添加表头
+                headers = [cell.text.strip() for cell in table.rows[0].cells]
+                for header in headers:
+                    preview_table.add_column(header, overflow="fold")
+
+                # 添加数据行预览
                 for row_idx, row in enumerate(table.rows[1:6], 1):  # 只显示前5行数据
                     cells = [cell.text.strip() for cell in row.cells]
                     if any(cells):  # 跳过空行
-                        data_node.add(f"第{row_idx}行: " + " | ".join(cells))
+                        preview_table.add_row(*cells)
 
-        # 显示文档结构树
-        console.print()
-        console.print(
-            Panel(tree, title="[bold]文档结构和内容[/bold]", border_style="blue")
-        )
-        console.print()
+                table_node.add(preview_table)
+
+        console.print(tree)
 
     except Exception as e:
-        console.print(f"[bold red]预览文件 {doc_path} 时出错: {e}[/bold red]")
+        console.print(
+            Panel(
+                f"[bold red]预览文件 {doc_path} 时出错: {e}[/bold red]",
+                border_style="red",
+            )
+        )
 
 
 def display_statistics(
     total_count: int, energy_saving_count: int, new_energy_count: int, output_file: str
 ) -> None:
     """Display processing statistics in a formatted table."""
-    print("\n" + "=" * 50)
-    print("处理统计报告".center(46))
-    print("=" * 50)
-    print(f"{'项目':^20}{'数值':^20}")
-    print("-" * 50)
-    print(f"{'总记录数':^20}{total_count:^20,}")
-    print(f"{'节能型汽车':^20}{energy_saving_count:^20,}")
-    print(f"{'新能源汽车':^20}{new_energy_count:^20,}")
-    print(f"{'输出文件':^20}{output_file:^20}")
-    print("=" * 50 + "\n")
+    # 创建统计表格
+    stats_table = Table(
+        title="📊 处理统计报告",
+        title_style="bold cyan",
+        show_header=True,
+        header_style="bold green",
+        border_style="blue",
+    )
+
+    # 添加列
+    stats_table.add_column("项目", style="cyan")
+    stats_table.add_column("数值", justify="right", style="green")
+    stats_table.add_column("占比", justify="right", style="yellow")
+
+    # 计算百分比
+    energy_saving_percent = (
+        energy_saving_count / total_count * 100 if total_count > 0 else 0
+    )
+    new_energy_percent = new_energy_count / total_count * 100 if total_count > 0 else 0
+
+    # 添加行
+    stats_table.add_row("📝 总记录数", f"{total_count:,}", "100%")
+    stats_table.add_row(
+        "🚗 节能型汽车", f"{energy_saving_count:,}", f"{energy_saving_percent:.1f}%"
+    )
+    stats_table.add_row(
+        "⚡ 新能源汽车", f"{new_energy_count:,}", f"{new_energy_percent:.1f}%"
+    )
+    stats_table.add_row("💾 输出文件", output_file, "")
+
+    # 显示表格
+    console.print()
+    console.print(stats_table)
+    console.print()
 
 
-def display_doc_content(
-    doc_structure: Union[Dict[str, Any], list[str]],
-    extra_info: Optional[Union[str, list[dict[str, str]]]] = None,
-) -> None:
-    """Display document structure in a tree format with enhanced formatting."""
-    # 创建文档结构树
-    tree = Tree("📄 文档结构")
+@dataclass
+class DocumentNode:
+    """文档节点类，用于构建文档树结构"""
 
-    def add_to_tree(node: Dict[str, Any], tree_node: Tree) -> None:
+    title: str
+    level: int
+    node_type: str  # 'section', 'subsection', 'table', 'text', 'note', 'correction'
+    content: Optional[str] = None
+    batch_number: Optional[str] = None
+    children: List["DocumentNode"] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class DocumentStructure:
+    """文档结构类，用于构建和管理文档的层级结构"""
+
+    def __init__(self):
+        self.root = DocumentNode("文档结构", 0, "root")
+        self.current_section: Optional[DocumentNode] = None
+        self.current_subsection: Optional[DocumentNode] = None
+        self.batch_number: Optional[str] = None
+
+    def add_node(
+        self,
+        title: str,
+        node_type: str,
+        content: Optional[str] = None,
+        level: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        parent_node: Optional[DocumentNode] = None,
+    ) -> DocumentNode:
+        """添加新节点到文档树"""
+        if level is None:
+            if node_type == "section":
+                level = 1
+            elif node_type == "subsection":
+                level = 2
+            elif node_type == "numbered_section":
+                level = 3
+            elif node_type == "numbered_subsection":
+                level = 4
+            else:
+                level = 5
+
+        node = DocumentNode(
+            title=title,
+            level=level,
+            node_type=node_type,
+            content=content,
+            batch_number=self.batch_number,
+            metadata=metadata or {},
+        )
+
+        # 如果指定了父节点，直接添加到父节点
+        if parent_node:
+            parent_node.children.append(node)
+            return node
+
+        # 否则使用默认的层级逻辑
+        if level == 1:
+            self.root.children.append(node)
+        elif level == 2:
+            if self.current_section:
+                self.current_section.children.append(node)
+            else:
+                self.root.children.append(node)
+        else:
+            if self.current_subsection:
+                self.current_subsection.children.append(node)
+            elif self.current_section:
+                self.current_section.children.append(node)
+            else:
+                self.root.children.append(node)
+
+        return node
+
+    def set_batch_number(self, batch_number: str):
+        """设置批次号"""
+        self.batch_number = batch_number
+
+    def to_dict(self) -> Dict[str, Any]:
+        """将文档结构转换为字典格式"""
+
+        def node_to_dict(node: DocumentNode) -> Dict[str, Any]:
+            return {
+                "title": node.title,
+                "type": node.node_type,
+                "level": node.level,
+                "content": node.content,
+                "batch_number": node.batch_number,
+                "metadata": node.metadata,
+                "children": [node_to_dict(child) for child in node.children],
+            }
+
+        return node_to_dict(self.root)
+
+
+def display_doc_content(doc_structure: DocumentStructure) -> None:
+    """使用树形结构显示文档内容"""
+
+    def get_node_style(node: DocumentNode) -> Tuple[str, str]:
+        """获取节点的样式和图标"""
+        styles = {
+            "root": ("bold blue", "📑"),
+            "section": ("bold cyan", "📌"),
+            "subsection": ("bold yellow", "📎"),
+            "numbered_section": ("bold green", "🔢"),
+            "numbered_subsection": ("bold magenta", "📍"),
+            "table": ("bold blue", "📊"),
+            "text": ("white", "📝"),
+            "note": ("bold magenta", "ℹ️"),
+            "correction": ("bold red", "⚠️"),
+        }
+        return styles.get(node.node_type, ("white", "•"))
+
+    def add_node_to_tree(tree: Tree, node: DocumentNode) -> None:
         """递归添加节点到树中"""
-        # 根据节点类型选择样式
-        style_map = {
-            "root": "white",
-            "batch": "bold red",
-            "section": "bold cyan",
-            "subsection": "yellow",
-            "subsubsection": "blue",
-            "item": "magenta",
-            "text": "white",
-        }
+        style, icon = get_node_style(node)
 
-        # 获取节点样式
-        node_type = node.get("type", "text")
-        style = style_map.get(node_type, "white")
+        # 构建节点标题
+        title = f"{icon} {node.title}"
+        if node.batch_number and node.level <= 2:
+            title += f" [dim](第{node.batch_number}批)[/dim]"
 
-        # 添加当前节点
-        name = node.get("name", "")
-        if name:
-            child = tree_node.add(f"[{style}]{name}[/{style}]")
-            # 递归添加子节点
-            for sub_node in node.get("children", []):
-                add_to_tree(sub_node, child)
+        # 创建节点
+        branch = tree.add(f"[{style}]{title}[/{style}]")
 
-    # 处理文档结构
-    if isinstance(doc_structure, dict):
-        add_to_tree(doc_structure, tree)
-    else:
-        # 如果是旧格式的列表，转换为新格式
-        root_node = {
-            "name": "文档内容",
-            "type": "root",
-            "children": [
-                {"name": item, "type": "text", "children": []} for item in doc_structure
-            ],
-        }
-        add_to_tree(root_node, tree)
+        # 添加内容（如果有且与标题不同）
+        if node.content and node.content != node.title:
+            content_lines = textwrap.wrap(node.content, width=100)
+            for line in content_lines:
+                branch.add(f"[dim]{line}[/dim]")
 
-    # 显示文档结构
+        # 添加元数据（如果有）
+        if node.metadata:
+            meta_branch = branch.add("[dim]元数据[/dim]")
+            for key, value in node.metadata.items():
+                meta_branch.add(f"[dim]{key}: {value}[/dim]")
+
+        # 递归处理子节点
+        for child in node.children:
+            add_node_to_tree(branch, child)
+
+    # 创建主树
+    tree = Tree("📄 文档结构", style="bold blue")
+    for child in doc_structure.root.children:
+        add_node_to_tree(tree, child)
+
+    # 显示树
     console.print("\n")
     console.print(Panel(tree, border_style="blue"))
-
-    # 显示额外信息
-    if isinstance(extra_info, list) and extra_info:
-        # 按类型分组
-        info_by_type: Dict[str, List[dict[str, str]]] = {}
-        for info in extra_info:
-            info_type = info.get("type", "其他")
-            if info_type not in info_by_type:
-                info_by_type[info_type] = []
-            info_by_type[info_type].append(info)
-
-        # 创建额外信息树
-        extra_tree = Tree("📝 额外信息")
-        for info_type, infos in info_by_type.items():
-            type_node = extra_tree.add(f"[bold]{info_type}[/bold]")
-            for info in infos:
-                section = info.get("section", "未知章节")
-                content = info.get("content", "")
-                batch = info.get("batch", "")
-                section_node = type_node.add(
-                    f"[blue]{section}[/blue]"
-                    + (f" [yellow](第{batch}批)[/yellow]" if batch else "")
-                )
-
-                # 对内容进行自动换行，确保每行不会太长
-                wrapped_content = textwrap.fill(
-                    content, width=100, break_long_words=False, break_on_hyphens=False
-                )
-                for line in wrapped_content.split("\n"):
-                    section_node.add(line)
-
-        console.print(Panel(extra_tree, border_style="green"))
-
     console.print()
 
 
 def display_comparison(new_models: set[str], removed_models: set[str]):
-    """
-    显示型号对比结果
-    """
-    table = Table(title="型号对比", show_header=True, header_style="bold magenta")
+    """显示型号对比结果"""
+    # 创建对比表格
+    compare_table = Table(
+        title="🔄 型号对比",
+        title_style="bold cyan",
+        show_header=True,
+        header_style="bold green",
+        border_style="blue",
+    )
 
-    table.add_column("变更类型", style="dim")
-    table.add_column("数量", justify="right")
-    table.add_column("型号列表")
+    # 添加列
+    compare_table.add_column("变更类型", style="cyan")
+    compare_table.add_column("数量", justify="right", style="green")
+    compare_table.add_column("型号列表", style="yellow")
 
     # 添加新增型号
     if new_models:
-        models_text = "\n".join(sorted(new_models))
-        table.add_row("新增", str(len(new_models)), models_text)
+        models_text = "\n".join(f"✨ {model}" for model in sorted(new_models))
+        compare_table.add_row("➕ 新增", str(len(new_models)), models_text)
 
     # 添加移除型号
     if removed_models:
-        models_text = "\n".join(sorted(removed_models))
-        table.add_row("移除", str(len(removed_models)), models_text)
+        models_text = "\n".join(f"❌ {model}" for model in sorted(removed_models))
+        compare_table.add_row("➖ 移除", str(len(removed_models)), models_text)
 
     if new_models or removed_models:
         console.print()
-        console.print(table)
+        console.print(compare_table)
         console.print()
     else:
-        console.print("\n[green]没有型号变更[/green]\n")
+        console.print(Panel("[green]✅ 没有型号变更[/green]", border_style="green"))
 
 
 @click.group()
@@ -619,7 +735,7 @@ def extract_car_info(doc_path: str, verbose: bool = False) -> List[Dict[str, Any
 @cli.command()
 @click.argument(
     "input_path",
-    type=click.Path(exists=True),  # 允许文件和目录
+    type=click.Path(exists=True),
 )
 @click.option(
     "-o",
@@ -635,11 +751,42 @@ def extract_car_info(doc_path: str, verbose: bool = False) -> List[Dict[str, Any
     type=click.Path(exists=True, dir_okay=False),
     help="与指定的CSV文件进行对比",
 )
+@click.option(
+    "--config",
+    type=click.Path(exists=True, dir_okay=False),
+    help="配置文件路径",
+)
 def process(
-    input_path: str, output: str, verbose: bool, preview: bool, compare: str | None
+    input_path: str,
+    output: str,
+    verbose: bool,
+    preview: bool,
+    compare: str | None,
+    config: str | None,
 ) -> None:
     """处理指定的docx文件或目录下的所有docx文件"""
-    process_files(input_path, output, verbose, preview, compare)
+    try:
+        # 设置日志
+        setup_logging()
+        logger = logging.getLogger(__name__)
+        logger.info(f"开始处理任务: 输入={input_path}, 输出={output}")
+
+        # 加载配置
+        config_data = {}
+        if config:
+            try:
+                config_data = load_config(config)
+                logger.info(f"加载配置文件: {config}")
+            except ConfigurationError as e:
+                logger.error(f"加载配置失败: {str(e)}")
+                console.print(f"[bold red]加载配置失败: {str(e)}")
+                return
+
+        process_files(input_path, output, verbose, preview, compare, config_data)
+
+    except Exception as e:
+        logger.error(f"处理任务失败: {str(e)}")
+        console.print(f"[bold red]处理任务失败: {str(e)}")
 
 
 def get_memory_usage() -> str:
@@ -655,134 +802,176 @@ def process_files(
     verbose: bool = False,
     preview: bool = False,
     compare: str | None = None,
+    config: dict = None,
 ) -> None:
     """处理指定的docx文件或目录下的所有docx文件的核心逻辑"""
-    NodeType = dict[str, Union[str, list[dict[str, Any]]]]
+    logger = logging.getLogger(__name__)
 
-    # 根据输入路径类型确定要处理的文件
-    input_path_obj = Path(input_path)
-    if input_path_obj.is_file():
-        if input_path_obj.suffix.lower() != ".docx":
-            console.print("[bold red]指定的文件不是docx文件")
-            return
-        doc_files = [input_path_obj]
-    else:
-        doc_files = list(input_path_obj.glob("*.docx"))
+    try:
+        input_path_obj = Path(input_path)
+        if input_path_obj.is_file():
+            if input_path_obj.suffix.lower() != ".docx":
+                raise ValueError("指定的文件不是docx文件")
+            doc_files = [input_path_obj]
+        else:
+            doc_files = list(input_path_obj.glob("*.docx"))
 
-    if not doc_files:
-        console.print("[bold red]未找到.docx文件")
-        return
+        if not doc_files:
+            raise ValueError("未找到.docx文件")
 
-    # 显示文件预览
-    if preview:
-        for doc_file in doc_files:
-            print_docx_content(str(doc_file))
+        if preview:
+            for doc_file in doc_files:
+                print_docx_content(str(doc_file))
 
-    # 初始化数据存储
-    all_cars_data = []
-    doc_contents: list[NodeType] = []
-    all_extra_info: list[dict[str, str]] = []
+        # 使用多进程处理文档
+        num_processes = min(mp.cpu_count(), len(doc_files))
+        logger.info(f"使用 {num_processes} 个进程处理 {len(doc_files)} 个文件")
 
-    # 创建进度显示
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TimeRemainingColumn(),
-        TimeElapsedColumn(),
-        console=console,
-        transient=True,
-    ) as progress:
-        main_task = progress.add_task("[cyan]处理文件", total=len(doc_files))
+        with mp.Pool(num_processes) as pool:
+            with Progress(
+                "[progress.description]{task.description}",
+                SpinnerColumn(),
+                BarColumn(bar_width=None),
+                "[progress.percentage]{task.percentage:>3.1f}%",
+                "•",
+                "[bold blue]{task.completed}/{task.total}",
+                "•",
+                TimeRemainingColumn(),
+                "•",
+                TimeElapsedColumn(),
+                console=console,
+                transient=True,
+            ) as progress:
+                main_task = progress.add_task(
+                    f"[bold cyan]🔄 处理文件", total=len(doc_files)
+                )
 
-        for doc_file in doc_files:
+                # 使用partial固定参数
+                process_func = partial(process_doc, verbose=verbose, config=config)
+
+                # 使用imap处理结果
+                all_cars_data = []
+                error_files = []
+
+                for doc_file, cars in zip(
+                    doc_files, pool.imap(process_func, [str(f) for f in doc_files])
+                ):
+                    if cars:
+                        all_cars_data.extend(cars)
+                        logger.info(
+                            f"✅ 文件 {doc_file} 处理完成，提取到 {len(cars)} 条记录"
+                        )
+                    else:
+                        error_files.append(doc_file)
+                        logger.error(f"❌ 文件 {doc_file} 处理失败")
+
+                    progress.advance(main_task)
+
+                    # 定期清理内存
+                    if len(all_cars_data) > 10000:
+                        gc.collect()
+
+        # 处理结果
+        if all_cars_data:
             try:
-                start_time = time.time()
-                if verbose:
-                    progress.log(f"[bold]开始处理文件: {doc_file}")
-                    progress.log(f"[dim]当前内存使用: {get_memory_usage()}[/dim]")
+                # 使用更高效的DataFrame构建方式
+                all_cars_df = pd.DataFrame(all_cars_data)
 
-                # 提取文档内容和额外信息
-                paragraphs, extra_info = extract_doc_content(str(doc_file))
-                all_extra_info.extend(extra_info)
+                # 优化列顺序设置
+                base_columns = [
+                    "batch",
+                    "car_type",
+                    "category",
+                    "sub_type",
+                    "序号",
+                    "企业名称",
+                    "品牌",
+                    "型号",
+                    "raw_text",
+                ]
+                all_columns = all_cars_df.columns.tolist()
+                final_columns = [col for col in base_columns if col in all_columns] + [
+                    col for col in all_columns if col not in base_columns
+                ]
 
-                # 处理车辆数据
-                processor = DocProcessor(str(doc_file))
-                cars = processor.process()
+                # 重新排列列并保存
+                all_cars_df = all_cars_df[final_columns]
+                all_cars_df.to_csv(output, index=False, encoding="utf-8-sig")
 
-                # 收集处理后的数据
-                if cars:
-                    all_cars_data.extend(cars)
+                logger.info(f"💾 处理完成，保存结果到: {output}")
+                logger.info(f"📊 总记录数: {len(all_cars_df)}")
 
-                # 清理内存
-                del processor
-                gc.collect()
+                # 显示统计信息
+                display_statistics(
+                    len(all_cars_df),
+                    len(all_cars_df[all_cars_df["car_type"] == 2]),
+                    len(all_cars_df[all_cars_df["car_type"] == 1]),
+                    output,
+                )
 
-                elapsed = time.time() - start_time
-                if verbose:
-                    progress.log(
-                        f"[bold green]文件 {doc_file} 处理完成，耗时: {elapsed:.2f}秒[/bold green]"
+                # 如果有处理失败的文件，显示警告
+                if error_files:
+                    error_msg = "❌ 以下文件处理失败:\n" + "\n".join(
+                        f"  • {f}" for f in error_files
                     )
-                    progress.log(f"[dim]处理后内存使用: {get_memory_usage()}[/dim]")
+                    logger.warning(error_msg)
+                    console.print(
+                        Panel(
+                            f"[bold yellow]{error_msg}[/bold yellow]",
+                            title="⚠️ 警告",
+                            border_style="yellow",
+                        )
+                    )
 
-                progress.advance(main_task)
+                # 如果需要对比
+                if compare:
+                    try:
+                        old_df = pd.read_csv(compare, encoding="utf-8-sig")
+                        new_models = set(all_cars_df["型号"].unique())
+                        old_models = set(old_df["型号"].unique())
+                        display_comparison(
+                            new_models - old_models, old_models - new_models
+                        )
+                        logger.info("✅ 完成型号对比")
+                    except Exception as e:
+                        error_msg = f"对比文件时出错: {str(e)}"
+                        logger.error(error_msg)
+                        console.print(
+                            Panel(
+                                f"[bold red]{error_msg}[/bold red]",
+                                title="❌ 错误",
+                                border_style="red",
+                            )
+                        )
 
             except Exception as e:
-                progress.log(f"[bold red]处理文件 {doc_file} 时出错: {e}")
+                error_msg = f"处理结果时出错: {str(e)}"
+                logger.error(error_msg)
+                console.print(
+                    Panel(
+                        f"[bold red]{error_msg}[/bold red]",
+                        title="❌ 错误",
+                        border_style="red",
+                    )
+                )
+        else:
+            logger.warning("未找到任何车辆记录")
+            console.print(
+                Panel(
+                    "[bold yellow]未找到任何车辆记录[/bold yellow]",
+                    title="⚠️ 警告",
+                    border_style="yellow",
+                )
+            )
 
-    # 创建根节点
-    doc_tree = {"name": "文档内容", "type": "root", "children": doc_contents}
-
-    # 显示统计和内容
-    if all_cars_data:
-        # 将收集的数据转换为DataFrame
-        all_cars_df = pd.DataFrame(all_cars_data)
-
-        # 设置列的顺序
-        base_columns = [
-            "batch",
-            "car_type",
-            "category",
-            "sub_type",
-            "序号",
-            "企业名称",
-            "品牌",
-            "型号",
-            "raw_text",
-        ]
-        all_columns = list(all_cars_df.columns)
-
-        # 将其他列添加到基础列后面
-        existing_columns = [col for col in base_columns if col in all_cars_df.columns]
-        other_columns = [col for col in all_columns if col not in base_columns]
-        final_columns = existing_columns + other_columns
-
-        # 重新排列列并保存
-        all_cars_df = all_cars_df[final_columns]
-        all_cars_df.to_csv(output, index=False, encoding="utf-8-sig")
-
-        # 显示统计和内容
-        display_statistics(
-            len(all_cars_df),
-            len(all_cars_df[all_cars_df["car_type"] == 2]),
-            len(all_cars_df[all_cars_df["car_type"] == 1]),
-            output,
+    except Exception as e:
+        error_msg = f"处理文件时出错: {str(e)}"
+        logger.error(error_msg)
+        console.print(
+            Panel(
+                f"[bold red]{error_msg}[/bold red]", title="❌ 错误", border_style="red"
+            )
         )
-        display_doc_content(doc_tree, all_extra_info)
-
-        # 如果需要对比
-        if compare:
-            try:
-                old_df = pd.read_csv(compare, encoding="utf-8-sig")
-                new_models = set(all_cars_df["型号"].unique())
-                old_models = set(old_df["型号"].unique())
-
-                display_comparison(new_models - old_models, old_models - new_models)
-            except Exception as e:
-                console.print(f"[bold red]对比文件时出错: {e}")
-    else:
-        console.print("[bold red]未找到任何车辆记录")
 
 
 @lru_cache(maxsize=32)
@@ -805,53 +994,180 @@ def profile_function(func):
     return wrapper
 
 
-class DocProcessor:
-    """文档处理器类"""
+def setup_logging(
+    default_path="logging.yaml", default_level=logging.INFO, env_key="LOG_CFG"
+):
+    """配置日志记录"""
+    path = os.getenv(env_key, default_path)
+    if os.path.exists(path):
+        with open(path, "rt") as f:
+            try:
+                config = yaml.safe_load(f.read())
+                logging.config.dictConfig(config)
+            except Exception as e:
+                print(f"加载日志配置出错: {e}")
+                setup_default_logging(default_level)
+    else:
+        setup_default_logging(default_level)
 
-    def __init__(self, doc_path: str, verbose: bool = True):
+
+def setup_default_logging(level):
+    """设置默认日志配置"""
+    log_dir = "logs"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"doc_processor_{timestamp}.log")
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[
+            logging.FileHandler(log_file, encoding="utf-8"),
+            logging.StreamHandler(),
+        ],
+    )
+
+
+class ConfigurationError(Exception):
+    """配置错误异常"""
+
+    pass
+
+
+class ProcessingError(Exception):
+    """处理错误异常"""
+
+    pass
+
+
+class DocumentError(Exception):
+    """文档错误异常"""
+
+    pass
+
+
+def load_config(config_path: str = "config.yaml") -> dict:
+    """加载配置文件"""
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+            return config
+        return {}
+    except Exception as e:
+        raise ConfigurationError(f"加载配置文件出错: {str(e)}")
+
+
+class DocProcessor:
+    def __init__(self, doc_path: str, verbose: bool = True, config: dict = None):
         self.doc_path = doc_path
         self.start_time = time.time()
-        self.doc: DocxDocument = load_document(doc_path)
+        self.config = config or {}
+        self.logger = logging.getLogger(__name__)
+        self.doc_structure = DocumentStructure()
+
+        try:
+            self._load_document()
+        except Exception as e:
+            self.logger.error(f"初始化文档处理器失败: {str(e)}")
+            raise DocumentError(f"无法加载文档 {doc_path}: {str(e)}")
+
         self.current_category: Optional[str] = None
         self.current_type: Optional[str] = None
         self.batch_number: Optional[str] = None
         self._table_cache: Dict[int, List[Dict[str, Any]]] = {}
         self.cars: List[Dict[str, Any]] = []
         self._processing_times: Dict[str, float] = {}
-        self._chunk_size = 1000  # 分块处理的大小
-        self.verbose = verbose  # 添加详细日志开关
+
+        # 从配置文件加载设置
+        self._chunk_size = self.config.get("chunk_size", 1000)
+        self.verbose = verbose
+        self._cache_size_limit = self.config.get("cache_size_limit", 50 * 1024 * 1024)
+        self._cleanup_interval = self.config.get("cleanup_interval", 300)
+
+        # 预编译正则表达式
+        self._batch_pattern = re.compile(r"第([一二三四五六七八九十百零\d]+)批")
+        self._whitespace_pattern = re.compile(r"\s+")
+        self._chinese_number_pattern = re.compile(r"([一二三四五六七八九十百零]+)")
+
+        self._last_cache_cleanup = time.time()
+        self.logger.info(f"初始化文档处理器: {doc_path}")
+
+        self.current_section: Optional[DocumentNode] = None
+        self.current_subsection: Optional[DocumentNode] = None
+        self.current_numbered_section: Optional[DocumentNode] = (
+            None  # 新增：用于跟踪带数字编号的节点
+        )
+
+    def _load_document(self):
+        """安全加载文档，处理大文件"""
+        try:
+            file_size = os.path.getsize(self.doc_path)
+            self.logger.info(
+                f"加载文档 {self.doc_path}, 大小: {file_size/1024/1024:.2f}MB"
+            )
+
+            if file_size > 100 * 1024 * 1024:  # 100MB
+                self.logger.warning(f"文档大小超过100MB，使用临时文件处理")
+                with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                    shutil.copy2(self.doc_path, tmp.name)
+                    self.doc = Document(tmp.name)
+                    os.unlink(tmp.name)
+            else:
+                self.doc = Document(self.doc_path)
+        except Exception as e:
+            self.logger.error(f"加载文档失败: {str(e)}")
+            raise DocumentError(f"无法加载文档 {self.doc_path}: {str(e)}")
+
+    def _check_and_cleanup_cache(self):
+        """检查并清理缓存"""
+        current_time = time.time()
+        if current_time - self._last_cache_cleanup > self._cleanup_interval:
+            cache_size = sum(len(str(v)) for v in self._table_cache.values())
+            if cache_size > self._cache_size_limit:
+                self._table_cache.clear()
+                gc.collect()
+            self._last_cache_cleanup = current_time
 
     def _extract_table_cells_fast(self, table) -> List[List[str]]:
         """优化的表格提取方法"""
-        rows = []
-        header_processed = False
-        last_company = ""
-        last_brand = ""
+        try:
+            rows = []
+            header_processed = False
+            last_company = ""
+            last_brand = ""
 
-        for row in table._tbl.tr_lst:
-            cells = []
-            for cell in row.tc_lst:
-                text = "".join(node.text for node in cell.xpath(".//w:t"))
-                cells.append(text.strip())
+            # 使用lxml的xpath直接提取文本
+            for row in table._tbl.xpath(".//w:tr"):
+                cells = []
+                for cell in row.xpath(".//w:tc"):
+                    # 直接获取所有文本节点
+                    text = "".join(t.text for t in cell.xpath(".//w:t"))
+                    cells.append(text.strip())
 
-            if not header_processed:
-                # 处理表头合并
-                processed_headers = self._process_merged_headers(cells)
-                rows.append(processed_headers)
-                header_processed = True
-                continue
+                if not header_processed:
+                    processed_headers = self._process_merged_headers(cells)
+                    rows.append(processed_headers)
+                    header_processed = True
+                    continue
 
-            # 处理数据行
-            processed_row = self._process_data_row(cells, last_company, last_brand)
-            if processed_row:
-                # 更新上一个有效的企业名称和品牌
-                if processed_row[1]:  # 企业名称列
-                    last_company = processed_row[1]
-                if processed_row[2]:  # 品牌/通用名称为空
-                    last_brand = processed_row[2]
-                rows.append(processed_row)
+                processed_row = self._process_data_row(cells, last_company, last_brand)
+                if processed_row:
+                    if processed_row[1]:
+                        last_company = processed_row[1]
+                    if processed_row[2]:
+                        last_brand = processed_row[2]
+                    rows.append(processed_row)
 
-        return rows
+                # 定期检查缓存
+                self._check_and_cleanup_cache()
+
+            return rows
+        except Exception as e:
+            logging.error(f"表格提取错误: {str(e)}")
+            return []
 
     def _process_merged_headers(self, headers: List[str]) -> List[str]:
         """处理合并的表头"""
@@ -1023,44 +1339,182 @@ class DocProcessor:
     @profile_function
     def process(self) -> List[Dict[str, Any]]:
         """处理文档并返回所有车辆信息"""
-        self._log_time("init")
-        table_count = 0
-        row_count = 0
+        try:
+            self.logger.info(f"开始处理文档: {self.doc_path}")
+            self._log_time("init")
 
-        # 遍历文档中的所有元素
-        for element in self.doc.element.body:
-            # 处理段落
-            if element.tag.endswith("p"):
-                text = element.text.strip()
-                if not text:
+            table_count = 0
+            row_count = 0
+            error_count = 0
+
+            # 遍历文档中的所有元素
+            for element in self.doc.element.body:
+                try:
+                    # 处理段落
+                    if element.tag.endswith("p"):
+                        text = element.text.strip()
+                        if not text:
+                            continue
+
+                        # 提取批次号
+                        if not self.batch_number:
+                            self.batch_number = extract_batch_number(text)
+                            if self.batch_number:
+                                self.doc_structure.set_batch_number(self.batch_number)
+                                self.logger.info(f"提取到批次号: {self.batch_number}")
+                                self.doc_structure.add_node(
+                                    f"第{self.batch_number}批", "batch", level=0
+                                )
+
+                        # 更新分类信息
+                        if "一、节能型汽车" in text:
+                            self.current_category = "节能型"
+                            self.current_section = self.doc_structure.add_node(
+                                "节能型汽车", "section", content=text
+                            )
+                            self.current_subsection = None
+                            self.current_numbered_section = None
+                            self.logger.debug(f"更新分类: {self.current_category}")
+                        elif "二、新能源汽车" in text:
+                            self.current_category = "新能源"
+                            self.current_section = self.doc_structure.add_node(
+                                "新能源汽车", "section", content=text
+                            )
+                            self.current_subsection = None
+                            self.current_numbered_section = None
+                            self.logger.debug(f"更新分类: {self.current_category}")
+                        elif text.startswith("（") and "）" in text:
+                            self.current_subsection = self.doc_structure.add_node(
+                                text.strip(),
+                                "subsection",
+                                content=text,
+                                parent_node=self.current_section,
+                            )
+                            self.current_numbered_section = None
+                            self.logger.debug(f"更新类型: {text}")
+                        # 处理带数字编号的节点
+                        elif text.startswith(("1.", "2.", "3.", "4.", "5.")):
+                            self.current_numbered_section = self.doc_structure.add_node(
+                                text.strip(),
+                                "numbered_section",
+                                content=text,
+                                parent_node=self.current_subsection
+                                or self.current_section,
+                            )
+                            self.logger.debug(f"更新编号节点: {text}")
+                        # 处理带括号数字编号的子节点
+                        elif text.startswith("（") and any(
+                            num in text for num in "123456789"
+                        ):
+                            if self.current_numbered_section:
+                                self.doc_structure.add_node(
+                                    text.strip(),
+                                    "numbered_subsection",
+                                    content=text,
+                                    parent_node=self.current_numbered_section,
+                                )
+                            else:
+                                self.doc_structure.add_node(
+                                    text.strip(),
+                                    "numbered_subsection",
+                                    content=text,
+                                    parent_node=self.current_subsection
+                                    or self.current_section,
+                                )
+                            self.logger.debug(f"更新编号子节点: {text}")
+                        elif "勘误" in text or "说明" in text:
+                            self.doc_structure.add_node(
+                                text[:20] + "...",
+                                "note",
+                                content=text,
+                                parent_node=self.current_section,
+                            )
+                        elif "更正" in text or "修改" in text:
+                            self.doc_structure.add_node(
+                                text[:20] + "...",
+                                "correction",
+                                content=text,
+                                parent_node=self.current_section,
+                            )
+                        else:
+                            self.doc_structure.add_node(
+                                text[:20] + "...",
+                                "text",
+                                content=text,
+                                parent_node=self.current_section,
+                            )
+
+                    # 处理表格
+                    elif element.tag.endswith("tbl"):
+                        table_count += 1
+                        for i, table in enumerate(self.doc.tables):
+                            if table._element is element:
+                                if table.rows:
+                                    row_count += len(table.rows)
+                                try:
+                                    table_cars = self._extract_car_info(
+                                        i, self.batch_number
+                                    )
+                                    self.cars.extend(table_cars)
+
+                                    # 添加表格节点到正确的父节点
+                                    parent_node = (
+                                        self.current_numbered_section
+                                        or self.current_subsection
+                                        or self.current_section
+                                    )
+                                    self.doc_structure.add_node(
+                                        f"表格 {i+1}",
+                                        "table",
+                                        metadata={
+                                            "rows": len(table.rows),
+                                            "columns": len(table.rows[0].cells)
+                                            if table.rows
+                                            else 0,
+                                            "records": len(table_cars),
+                                        },
+                                        parent_node=parent_node,
+                                    )
+
+                                    self.logger.info(
+                                        f"处理表格 {i+1}, 提取到 {len(table_cars)} 条记录"
+                                    )
+                                except Exception as e:
+                                    error_count += 1
+                                    self.logger.error(f"处理表格 {i+1} 出错: {str(e)}")
+                                break
+                except Exception as e:
+                    error_count += 1
+                    self.logger.error(f"处理元素出错: {str(e)}")
                     continue
 
-                # 提取批次号
-                if not self.batch_number:
-                    self.batch_number = extract_batch_number(text)
+            self._log_time("process")
+            self.logger.info(
+                f"文档处理完成: {table_count} 个表格, {row_count} 行, "
+                f"{len(self.cars)} 条记录, {error_count} 个错误"
+            )
 
-                # 更新分类信息
-                if "一、节能型汽车" in text:
-                    self.current_category = "节能型"
-                elif "二、新能源汽车" in text:
-                    self.current_category = "新能源"
-                elif text.startswith("（") and "）" in text:
-                    self.current_type = text.strip()
+            # 显示文档结构
+            if self.verbose:
+                display_doc_content(self.doc_structure)
 
-            # 处理表格
-            elif element.tag.endswith("tbl"):
-                table_count += 1
-                for i, table in enumerate(self.doc.tables):
-                    if table._element is element:
-                        if table.rows:
-                            row_count += len(table.rows)
-                        table_cars = self._extract_car_info(i, self.batch_number)
-                        self.cars.extend(table_cars)
-                        break
+            return self.cars
 
-        self._log_time("process")
-        console.print(f"[dim]处理了 {table_count} 个表格，共 {row_count} 行[/dim]")
-        return self.cars
+        except Exception as e:
+            self.logger.error(f"处理文档失败: {str(e)}")
+            raise ProcessingError(f"处理文档 {self.doc_path} 失败: {str(e)}")
+
+
+def process_doc(
+    doc_path: str, verbose: bool = False, config: dict = None
+) -> List[Dict[str, Any]]:
+    """单个文档处理函数，用于多进程"""
+    try:
+        processor = DocProcessor(doc_path, verbose, config)
+        return processor.process()
+    except Exception as e:
+        logging.error(f"处理文档 {doc_path} 失败: {str(e)}")
+        return []
 
 
 if __name__ == "__main__":
