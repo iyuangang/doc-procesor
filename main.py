@@ -100,11 +100,10 @@ def cn_to_arabic(cn_num: str) -> str:
     # 处理带十的两位数
     if "十" in cn_num:
         parts = cn_num.split("十")
-        tens = CN_NUMS[parts[0]]
+        # 直接在字符串格式化中使用CN_NUMS字典的值，避免类型转换
         if len(parts) == 1 or not parts[1]:
-            return f"{tens}0"
-        ones = CN_NUMS[parts[1]]
-        return f"{tens}{ones}"
+            return f"{CN_NUMS[parts[0]]}0"
+        return f"{CN_NUMS[parts[0]]}{CN_NUMS[parts[1]]}"
 
     return CN_NUMS.get(cn_num, cn_num)
 
@@ -235,7 +234,8 @@ def get_table_type(
     # 记录匹配的规则
     matched_rules = []
     for rule in type_rules:
-        if rule["required"].issubset(header_set):
+        required_set = set(rule["required"])  # 转换为集合以支持issubset操作
+        if required_set.issubset(header_set):
             if "optional" not in rule or any(
                 opt in header_set for opt in rule["optional"]
             ):
@@ -247,9 +247,10 @@ def get_table_type(
         # 记录多重匹配情况
         logging.warning(f"表头 {headers} 匹配多个类型: {matched_rules}")
         # 使用当前上下文选择最可能的类型
-        return current_category or matched_rules[0][
-            "category"
-        ], current_type or matched_rules[0]["type"]
+        return (
+            current_category or matched_rules[0]["category"],
+            current_type or matched_rules[0]["type"],
+        )
 
     # 如果没有匹配规则，保持当前类型
     return current_category or "未知", current_type or "未知"
@@ -496,6 +497,10 @@ def display_statistics(
     total_count: int, energy_saving_count: int, new_energy_count: int, output_file: str
 ) -> None:
     """Display processing statistics in a formatted table."""
+    # 在显示表格前添加标题，表明这是关键信息
+    console.print()
+    console.print("[bold cyan]📊 关键信息：处理统计报告[/bold cyan]")
+
     # 创建统计表格
     stats_table = Table(
         title="📊 处理统计报告",
@@ -527,7 +532,6 @@ def display_statistics(
     stats_table.add_row("💾 输出文件", output_file, "")
 
     # 显示表格
-    console.print()
     console.print(stats_table)
     console.print()
 
@@ -728,65 +732,8 @@ def cli():
 
 def extract_car_info(doc_path: str, verbose: bool = False) -> List[Dict[str, Any]]:
     """从docx文件中提取车辆信息"""
-    processor = DocProcessor(doc_path)
+    processor = DocProcessor(doc_path, verbose)
     return processor.process()
-
-
-@cli.command()
-@click.argument(
-    "input_path",
-    type=click.Path(exists=True),
-)
-@click.option(
-    "-o",
-    "--output",
-    type=click.Path(dir_okay=False),
-    default="cars_output.csv",
-    help="输出CSV文件路径",
-)
-@click.option("-v", "--verbose", is_flag=True, help="显示详细处理信息")
-@click.option("--preview", is_flag=True, help="显示文档内容预览")
-@click.option(
-    "--compare",
-    type=click.Path(exists=True, dir_okay=False),
-    help="与指定的CSV文件进行对比",
-)
-@click.option(
-    "--config",
-    type=click.Path(exists=True, dir_okay=False),
-    help="配置文件路径",
-)
-def process(
-    input_path: str,
-    output: str,
-    verbose: bool,
-    preview: bool,
-    compare: str | None,
-    config: str | None,
-) -> None:
-    """处理指定的docx文件或目录下的所有docx文件"""
-    try:
-        # 设置日志
-        setup_logging()
-        logger = logging.getLogger(__name__)
-        logger.info(f"开始处理任务: 输入={input_path}, 输出={output}")
-
-        # 加载配置
-        config_data = {}
-        if config:
-            try:
-                config_data = load_config(config)
-                logger.info(f"加载配置文件: {config}")
-            except ConfigurationError as e:
-                logger.error(f"加载配置失败: {str(e)}")
-                console.print(f"[bold red]加载配置失败: {str(e)}")
-                return
-
-        process_files(input_path, output, verbose, preview, compare, config_data)
-
-    except Exception as e:
-        logger.error(f"处理任务失败: {str(e)}")
-        console.print(f"[bold red]处理任务失败: {str(e)}")
 
 
 def get_memory_usage() -> str:
@@ -796,13 +743,127 @@ def get_memory_usage() -> str:
     return f"{memory_info.rss / 1024 / 1024:.1f}MB"
 
 
+def process_doc(
+    doc_path: str, verbose: bool = False, config: Optional[dict] = None
+) -> List[Dict[str, Any]]:
+    """单个文档处理函数，用于多进程"""
+    try:
+        # 如果是简洁模式，抑制详细输出但保留三项关键信息
+        processor = DocProcessor(doc_path, verbose, config)
+        return processor.process()
+    except Exception as e:
+        logging.error(f"处理文档 {doc_path} 失败: {str(e)}")
+        return []
+
+
+def verify_all_batches(all_cars_data: List[Dict[str, Any]]) -> dict:
+    """验证所有批次的数据一致性"""
+    # 按批次分组
+    batch_data = {}
+    for car in all_cars_data:
+        batch = car.get("batch")
+        if not batch:
+            continue
+
+        if batch not in batch_data:
+            batch_data[batch] = []
+        batch_data[batch].append(car)
+
+    # 验证每个批次
+    results = {}
+    for batch, cars in batch_data.items():
+        # 按表格分组
+        table_counts = {}
+        for car in cars:
+            table_id = car.get("table_id", "未知")
+            if table_id not in table_counts:
+                table_counts[table_id] = 0
+            table_counts[table_id] += 1
+
+        # 总计
+        total_count = len(cars)
+
+        results[batch] = {"total": total_count, "table_counts": table_counts}
+
+    return results
+
+
+def display_batch_verification(batch_results: dict):
+    """显示批次验证结果"""
+    if not batch_results:
+        console.print(
+            Panel(
+                "[yellow]⚠️ 没有批次数据可供验证[/yellow]",
+                title="批次验证",
+                border_style="yellow",
+            )
+        )
+        return
+
+    # 创建批次汇总表格
+    summary_table = Table(
+        title="🔍 批次数据汇总",
+        title_style="bold cyan",
+        show_header=True,
+        header_style="bold green",
+        border_style="blue",
+    )
+
+    # 添加列
+    summary_table.add_column("批次", style="cyan")
+    summary_table.add_column("记录数", justify="right", style="green")
+    summary_table.add_column("表格数", justify="right", style="yellow")
+
+    # 计算批次总数，如果超过一定数量，只显示部分
+    batch_count = len(batch_results)
+    show_all = batch_count <= 50  # 只有50个批次以内才全部显示
+
+    # 添加批次数据
+    total_records = 0
+    total_tables = 0
+
+    sorted_batches = sorted(batch_results.items())
+
+    # 如果批次太多，只显示前20个和后20个
+    if not show_all:
+        display_batches = sorted_batches[:20] + sorted_batches[-20:]
+        console.print(
+            f"[yellow]注意：只显示前20个和后20个批次（共{batch_count}个批次）[/yellow]"
+        )
+    else:
+        display_batches = sorted_batches
+
+    for batch, data in display_batches:
+        total_records += data["total"]
+        table_count = len(data["table_counts"])
+        total_tables += table_count
+        summary_table.add_row(f"第{batch}批", str(data["total"]), str(table_count))
+
+    # 如果有省略的批次，添加省略提示行
+    if not show_all and batch_count > 40:
+        summary_table.add_row(f"... (省略 {batch_count - 40} 个批次) ...", "...", "...")
+
+    # 添加合计行
+    summary_table.add_row(
+        "[bold]合计[/bold]",
+        f"[bold]{total_records}[/bold]",
+        f"[bold]{total_tables}[/bold]",
+    )
+
+    # 在表格前添加标题，表明这是关键信息
+    console.print()
+    console.print("[bold cyan]📊 关键信息：批次数据汇总[/bold cyan]")
+    console.print(summary_table)
+    console.print()
+
+
 def process_files(
     input_path: str,
     output: str,
     verbose: bool = False,
     preview: bool = False,
     compare: str | None = None,
-    config: dict = None,
+    config: Optional[dict] = None,
 ) -> None:
     """处理指定的docx文件或目录下的所有docx文件的核心逻辑"""
     logger = logging.getLogger(__name__)
@@ -874,40 +935,128 @@ def process_files(
         # 处理结果
         if all_cars_data:
             try:
-                # 使用更高效的DataFrame构建方式
-                all_cars_df = pd.DataFrame(all_cars_data)
+                # 验证所有批次的数据一致性
+                batch_results = verify_all_batches(all_cars_data)
 
-                # 优化列顺序设置
-                base_columns = [
-                    "batch",
-                    "car_type",
-                    "category",
-                    "sub_type",
-                    "序号",
-                    "企业名称",
-                    "品牌",
-                    "型号",
-                    "raw_text",
-                ]
-                all_columns = all_cars_df.columns.tolist()
-                final_columns = [col for col in base_columns if col in all_columns] + [
-                    col for col in all_columns if col not in base_columns
-                ]
+                # 始终显示批次验证结果，即使在简洁模式下
+                display_batch_verification(batch_results)
 
-                # 重新排列列并保存
-                all_cars_df = all_cars_df[final_columns]
-                all_cars_df.to_csv(output, index=False, encoding="utf-8-sig")
+                # 估计数据大小
+                estimated_size = len(all_cars_data) * 500  # 假设每条记录约500字节
+                is_large_dataset = estimated_size > 100 * 1024 * 1024  # 100MB
 
-                logger.info(f"💾 处理完成，保存结果到: {output}")
-                logger.info(f"📊 总记录数: {len(all_cars_df)}")
+                if is_large_dataset:
+                    logger.info(
+                        f"大数据集 ({len(all_cars_data)} 条记录)，使用优化处理..."
+                    )
 
-                # 显示统计信息
-                display_statistics(
-                    len(all_cars_df),
-                    len(all_cars_df[all_cars_df["car_type"] == 2]),
-                    len(all_cars_df[all_cars_df["car_type"] == 1]),
-                    output,
-                )
+                    # 使用分块处理
+                    chunk_size = 50000
+                    with open(output, "w", encoding="utf-8-sig") as f:
+                        # 写入表头
+                        first_batch = all_cars_data[:100]  # 取前100条确定字段
+                        all_fields = set()
+                        for car in first_batch:
+                            all_fields.update(car.keys())
+
+                        base_columns = [
+                            "batch",
+                            "car_type",
+                            "category",
+                            "sub_type",
+                            "序号",
+                            "企业名称",
+                            "品牌",
+                            "型号",
+                            "table_id",
+                            "raw_text",
+                        ]
+
+                        header_fields = [
+                            col for col in base_columns if col in all_fields
+                        ] + [
+                            col for col in sorted(all_fields) if col not in base_columns
+                        ]
+
+                        f.write(",".join(header_fields) + "\n")
+
+                        # 分块写入数据
+                        for i in range(0, len(all_cars_data), chunk_size):
+                            chunk = all_cars_data[i : i + chunk_size]
+                            chunk_df = pd.DataFrame(chunk)
+                            chunk_df = chunk_df.reindex(columns=header_fields)
+
+                            if i == 0:
+                                chunk_df.to_csv(
+                                    f, index=False, header=False, encoding="utf-8-sig"
+                                )
+                            else:
+                                chunk_df.to_csv(
+                                    f,
+                                    index=False,
+                                    header=False,
+                                    encoding="utf-8-sig",
+                                    mode="a",
+                                )
+
+                            # 释放内存
+                            del chunk_df
+                            gc.collect()
+
+                    logger.info(f"💾 处理完成，保存结果到: {output}")
+                    logger.info(f"📊 总记录数: {len(all_cars_data)}")
+
+                    # 计算统计数据
+                    energy_saving_count = sum(
+                        1 for car in all_cars_data if car.get("car_type") == 2
+                    )
+                    new_energy_count = sum(
+                        1 for car in all_cars_data if car.get("car_type") == 1
+                    )
+
+                    # 始终显示统计信息，即使在简洁模式下
+                    display_statistics(
+                        len(all_cars_data),
+                        energy_saving_count,
+                        new_energy_count,
+                        output,
+                    )
+                else:
+                    # 原有处理逻辑
+                    all_cars_df = pd.DataFrame(all_cars_data)
+
+                    # 优化列顺序设置
+                    base_columns = [
+                        "batch",
+                        "car_type",
+                        "category",
+                        "sub_type",
+                        "序号",
+                        "企业名称",
+                        "品牌",
+                        "型号",
+                        "table_id",
+                        "raw_text",
+                    ]
+                    all_columns = all_cars_df.columns.tolist()
+                    final_columns = [
+                        col for col in base_columns if col in all_columns
+                    ] + [col for col in all_columns if col not in base_columns]
+
+                    # 重新排列列并保存
+                    all_cars_df = all_cars_df[final_columns]
+                    all_cars_df.to_csv(output, index=False, encoding="utf-8-sig")
+
+                    logger.info(f"💾 处理完成，保存结果到: {output}")
+                    logger.info(f"📊 总记录数: {len(all_cars_df)}")
+
+                    # 始终显示统计信息，即使在简洁模式下
+                    display_statistics(
+                        len(all_cars_df),
+                        len(all_cars_df[all_cars_df["car_type"] == 2]),
+                        len(all_cars_df[all_cars_df["car_type"] == 1]),
+                        output,
+                    )
 
                 # 如果有处理失败的文件，显示警告
                 if error_files:
@@ -1061,7 +1210,9 @@ def load_config(config_path: str = "config.yaml") -> dict:
 
 
 class DocProcessor:
-    def __init__(self, doc_path: str, verbose: bool = True, config: dict = None):
+    def __init__(
+        self, doc_path: str, verbose: bool = True, config: Optional[dict] = None
+    ):
         self.doc_path = doc_path
         self.start_time = time.time()
         self.config = config or {}
@@ -1080,17 +1231,26 @@ class DocProcessor:
         self._table_cache: Dict[int, List[Dict[str, Any]]] = {}
         self.cars: List[Dict[str, Any]] = []
         self._processing_times: Dict[str, float] = {}
+        self.declared_count: Optional[int] = None  # 声明的总记录数
 
         # 从配置文件加载设置
         self._chunk_size = self.config.get("chunk_size", 1000)
         self.verbose = verbose
         self._cache_size_limit = self.config.get("cache_size_limit", 50 * 1024 * 1024)
         self._cleanup_interval = self.config.get("cleanup_interval", 300)
+        # 添加跳过总记录数检查的配置选项
+        self._skip_count_check = self.config.get("skip_count_check", False)
+        # 设置搜索限制
+        self._max_paragraphs_to_search = self.config.get("max_paragraphs_to_search", 30)
+        self._max_tables_to_search = self.config.get("max_tables_to_search", 5)
 
         # 预编译正则表达式
         self._batch_pattern = re.compile(r"第([一二三四五六七八九十百零\d]+)批")
         self._whitespace_pattern = re.compile(r"\s+")
         self._chinese_number_pattern = re.compile(r"([一二三四五六七八九十百零]+)")
+        self._count_pattern = re.compile(
+            r"(共计|总计|合计).*?(\d+).*?(款|个|种|辆|台|项)"
+        )  # 总记录数模式
 
         self._last_cache_cleanup = time.time()
         self.logger.info(f"初始化文档处理器: {doc_path}")
@@ -1098,7 +1258,7 @@ class DocProcessor:
         self.current_section: Optional[DocumentNode] = None
         self.current_subsection: Optional[DocumentNode] = None
         self.current_numbered_section: Optional[DocumentNode] = (
-            None  # 新增：用于跟踪带数字编号的节点
+            None  # 用于跟踪带数字编号的节点
         )
 
     def _load_document(self):
@@ -1170,13 +1330,13 @@ class DocProcessor:
             return []
 
     def _process_merged_headers(self, headers: List[str]) -> List[str]:
-        """处理合并的表头"""
+        """处理合并的表头，例如将'型式'和'档位数'合并为'变速器'"""
         processed = []
         i = 0
         while i < len(headers):
             if (
-                headers[i] == "型式"
-                and i + 1 < len(headers)
+                i + 1 < len(headers)
+                and headers[i] == "型式"
                 and headers[i + 1] == "档位数"
             ):
                 processed.append("变速器")
@@ -1189,7 +1349,7 @@ class DocProcessor:
     def _process_data_row(
         self, row: List[str], last_company: str, last_brand: str
     ) -> Optional[List[str]]:
-        """处理数据行，处理空值和延续性"""
+        """处理数据行，包括空值处理和数据继承"""
         # 跳过全空行
         if not any(cell.strip() for cell in row):
             return None
@@ -1205,13 +1365,93 @@ class DocProcessor:
                 processed.append(last_company)
             elif i == 2 and not value:  # 品牌/通用名称为空
                 processed.append(last_brand)
-            elif "型式" in value and "档位数" in value:  # 处理变速器信息
-                parts = value.split()
-                processed.append(f"{parts[0]} {parts[1]}")
             else:
                 processed.append(value)
 
         return processed
+
+    def _extract_declared_count(self) -> Optional[int]:
+        """
+        从文档中提取批次声明的总记录数
+        优化版本：限制搜索范围并提供跳过选项
+
+        Returns:
+            Optional[int]: 声明的总记录数，如果未找到则返回None
+        """
+        # 如果配置了跳过总记录数检查，直接返回None
+        if self._skip_count_check:
+            self.logger.info("根据配置跳过总记录数检查")
+            return None
+
+        # 获取文件大小，如果超过阈值直接跳过
+        try:
+            file_size = os.path.getsize(self.doc_path) / (1024 * 1024)  # MB
+            if file_size > 50:  # 超过50MB的文档
+                self.logger.info(
+                    f"文档大小 {file_size:.2f}MB 超过阈值，跳过总记录数检查"
+                )
+                return None
+        except:
+            pass  # 如果无法获取文件大小，继续检查
+
+        start_time = time.time()
+
+        # 1. 只搜索前N个段落
+        paragraphs_to_search = min(
+            self._max_paragraphs_to_search, len(self.doc.paragraphs)
+        )
+        self.logger.debug(f"搜索前 {paragraphs_to_search} 个段落以寻找总记录数")
+
+        for i, para in enumerate(self.doc.paragraphs[:paragraphs_to_search]):
+            text = para.text.strip()
+            if not text:
+                continue
+
+            if "总" in text or "共" in text or "合计" in text:
+                match = self._count_pattern.search(text)
+                if match:
+                    try:
+                        count = int(match.group(2))
+                        search_time = time.time() - start_time
+                        self.logger.info(
+                            f"从段落中提取到总记录数: {count} (搜索耗时: {search_time:.2f}秒)"
+                        )
+                        return count
+                    except (ValueError, IndexError):
+                        continue
+
+        # 2. 只搜索前M个表格
+        tables_to_search = min(self._max_tables_to_search, len(self.doc.tables))
+        self.logger.debug(f"搜索前 {tables_to_search} 个表格以寻找总记录数")
+
+        for i, table in enumerate(self.doc.tables[:tables_to_search]):
+            if not table.rows:
+                continue
+
+            # 只检查表格的前3行和后3行，这些位置最可能出现合计信息
+            rows_to_check = []
+            if len(table.rows) > 6:
+                rows_to_check = list(table.rows[:3]) + list(table.rows[-3:])
+            else:
+                rows_to_check = table.rows
+
+            for row in rows_to_check:
+                cells = [cell.text.strip() for cell in row.cells]
+                # 检查是否包含合计相关的内容
+                if any(cell.startswith(("合计", "总计")) for cell in cells):
+                    # 尝试从合计行中获取数值
+                    for cell in cells:
+                        if cell.isdigit():
+                            count = int(cell)
+                            search_time = time.time() - start_time
+                            self.logger.info(
+                                f"从表格合计行中提取到总记录数: {count} (搜索耗时: {search_time:.2f}秒)"
+                            )
+                            return count
+
+        search_time = time.time() - start_time
+        self.logger.warning(f"未能找到批次总记录数声明 (搜索耗时: {search_time:.2f}秒)")
+        return None
 
     def _extract_car_info(
         self, table_index: int, batch_number: Optional[str] = None
@@ -1238,7 +1478,7 @@ class DocProcessor:
         if not headers:
             return table_cars
 
-        # 显示表格结构信息
+        # 显示表格结构信息（仅在详细模式下）
         if self.verbose:
             console.print(f"\n[cyan]表格 {table_index + 1} 结构信息:[/cyan]")
             console.print(f"表头: {headers}")
@@ -1257,6 +1497,7 @@ class DocProcessor:
             "sub_type": table_type,
             "car_type": 2 if table_category == "节能型" else 1,
             "batch": batch_number,
+            "table_id": table_index + 1,  # 添加表格ID，从1开始计数
         }
 
         total_rows = len(all_rows) - 1
@@ -1332,7 +1573,7 @@ class DocProcessor:
         current_time = time.time()
         elapsed = current_time - self.start_time
         self._processing_times[operation] = elapsed
-        if operation != "init":
+        if operation != "init" and self.verbose:
             console.print(f"[dim]{operation} 耗时: {elapsed:.2f}秒[/dim]")
         self.start_time = current_time
 
@@ -1476,9 +1717,10 @@ class DocProcessor:
                                         parent_node=parent_node,
                                     )
 
-                                    self.logger.info(
-                                        f"处理表格 {i+1}, 提取到 {len(table_cars)} 条记录"
-                                    )
+                                    if self.verbose:
+                                        self.logger.info(
+                                            f"处理表格 {i+1}, 提取到 {len(table_cars)} 条记录"
+                                        )
                                 except Exception as e:
                                     error_count += 1
                                     self.logger.error(f"处理表格 {i+1} 出错: {str(e)}")
@@ -1494,9 +1736,35 @@ class DocProcessor:
                 f"{len(self.cars)} 条记录, {error_count} 个错误"
             )
 
-            # 显示文档结构
-            if self.verbose:
+            # 执行批次数据一致性验证 - 只在处理后执行一次
+            verification_start = time.time()
+            consistency_result = self.verify_batch_consistency()
+            verification_time = time.time() - verification_start
+            self.logger.info(
+                f"批次一致性验证结果: {consistency_result['status']} (耗时: {verification_time:.2f}秒)"
+            )
+
+            # 计算文件大小和记录数
+            file_size = os.path.getsize(self.doc_path) / (1024 * 1024)  # MB
+            record_count = len(self.cars)
+
+            # 对于大文件或大量记录，禁用详细显示以提高性能
+            is_large_file = file_size > 50 or record_count > 10000  # 50MB或1万条记录
+
+            # 显示文档结构（仅在详细模式下）
+            if self.verbose and not is_large_file:
                 display_doc_content(self.doc_structure)
+            elif self.verbose and is_large_file:
+                console.print(
+                    "[yellow]文件较大，跳过显示详细文档结构以提高性能[/yellow]"
+                )
+
+            # 显示批次一致性验证结果（始终显示，即使在简洁模式下）
+            self._display_consistency_result(consistency_result)
+
+            # 处理完成后主动释放资源
+            self._table_cache.clear()
+            gc.collect()
 
             return self.cars
 
@@ -1504,17 +1772,223 @@ class DocProcessor:
             self.logger.error(f"处理文档失败: {str(e)}")
             raise ProcessingError(f"处理文档 {self.doc_path} 失败: {str(e)}")
 
+    def verify_batch_consistency(self) -> dict:
+        """
+        验证每个批次的表格数据总和是否与批次总记录数一致
+        即便没有声明的总记录数，也验证表格记录数与处理后的记录数是否一致
 
-def process_doc(
-    doc_path: str, verbose: bool = False, config: dict = None
-) -> List[Dict[str, Any]]:
-    """单个文档处理函数，用于多进程"""
+        Returns:
+            dict: 包含批次验证结果的字典
+        """
+        # 如果没有批次号，直接返回
+        if not self.batch_number:
+            return {"status": "no_batch", "message": "未找到批次号"}
+
+        # 按表格分组统计车辆记录数
+        table_counts = {}
+        for car in self.cars:
+            table_id = car.get("table_id", "未知")
+            if table_id not in table_counts:
+                table_counts[table_id] = 0
+            table_counts[table_id] += 1
+
+        # 计算从表格中提取的总记录数
+        total_extracted_count = sum(table_counts.values())
+
+        # 获取批次声明的总记录数
+        if self.declared_count is None:
+            self.declared_count = self._extract_declared_count()
+
+        # 验证结果
+        if self.declared_count is not None:
+            # 如果有声明的总记录数，比较声明数与实际数
+            if total_extracted_count == self.declared_count:
+                return {
+                    "status": "match",
+                    "message": f"批次记录数匹配：声明 {self.declared_count}，实际 {total_extracted_count}",
+                    "batch": self.batch_number,
+                    "actual_count": total_extracted_count,
+                    "declared_count": self.declared_count,
+                    "table_counts": table_counts,
+                }
+            else:
+                return {
+                    "status": "mismatch",
+                    "message": f"批次记录数不匹配：声明 {self.declared_count}，实际 {total_extracted_count}",
+                    "batch": self.batch_number,
+                    "actual_count": total_extracted_count,
+                    "declared_count": self.declared_count,
+                    "table_counts": table_counts,
+                    "difference": self.declared_count - total_extracted_count,
+                }
+        else:
+            # 如果没有声明的总记录数，验证表格总记录数与处理后的记录数是否一致
+            processed_count = len(self.cars)
+            if total_extracted_count == processed_count:
+                return {
+                    "status": "internal_match",
+                    "message": f"内部一致性检查通过：表格记录总数 {total_extracted_count} 与处理结果数 {processed_count} 一致",
+                    "batch": self.batch_number,
+                    "actual_count": total_extracted_count,
+                    "processed_count": processed_count,
+                    "table_counts": table_counts,
+                }
+            else:
+                return {
+                    "status": "internal_mismatch",
+                    "message": f"内部一致性检查失败：表格记录总数 {total_extracted_count} 与处理结果数 {processed_count} 不一致",
+                    "batch": self.batch_number,
+                    "actual_count": total_extracted_count,
+                    "processed_count": processed_count,
+                    "table_counts": table_counts,
+                    "difference": total_extracted_count - processed_count,
+                }
+
+    def _display_consistency_result(self, result: dict):
+        """显示批次一致性验证结果"""
+        # 在显示结果前添加标题，表明这是关键信息
+        console.print()
+        console.print("[bold cyan]📊 关键信息：数据一致性检查[/bold cyan]")
+
+        if result["status"] == "no_batch":
+            console.print(
+                Panel(
+                    "[yellow]⚠️ 未找到批次号，无法验证数据一致性[/yellow]",
+                    title="数据一致性检查",
+                    border_style="yellow",
+                )
+            )
+            return
+
+        if result["status"] == "unknown":
+            console.print(
+                Panel(
+                    f"[yellow]⚠️ 第{result['batch']}批：未找到总记录数声明，实际记录数为 {result['actual_count']}[/yellow]",
+                    title="数据一致性检查",
+                    border_style="yellow",
+                )
+            )
+        elif result["status"] == "match":
+            console.print(
+                Panel(
+                    f"[green]✅ 第{result['batch']}批：记录数匹配，共 {result['actual_count']} 条记录[/green]",
+                    title="数据一致性检查",
+                    border_style="green",
+                )
+            )
+        elif result["status"] == "mismatch":
+            diff_text = (
+                f"差异 {result['difference']} 条" if "difference" in result else ""
+            )
+            console.print(
+                Panel(
+                    f"[red]❌ 第{result['batch']}批：记录数不匹配！声明 {result['declared_count']}，实际 {result['actual_count']}，{diff_text}[/red]",
+                    title="⚠️ 数据一致性检查",
+                    border_style="red",
+                )
+            )
+        elif result["status"] == "internal_match":
+            console.print(
+                Panel(
+                    f"[green]✅ 第{result['batch']}批：内部一致性检查通过，表格记录总数 {result['actual_count']} 与处理结果数 {result['processed_count']} 一致[/green]",
+                    title="数据一致性检查",
+                    border_style="green",
+                )
+            )
+        elif result["status"] == "internal_mismatch":
+            diff_text = (
+                f"差异 {result['difference']} 条" if "difference" in result else ""
+            )
+            console.print(
+                Panel(
+                    f"[red]❌ 第{result['batch']}批：内部一致性检查失败！表格记录总数 {result['actual_count']} 与处理结果数 {result['processed_count']} 不一致，{diff_text}[/red]",
+                    title="⚠️ 数据一致性检查",
+                    border_style="red",
+                )
+            )
+
+        # 显示表格记录分布
+        table_counts = result.get("table_counts", {})
+        if table_counts:
+            count_table = Table(
+                title="📊 表格记录分布",
+                title_style="bold cyan",
+                show_header=True,
+                header_style="bold green",
+                border_style="blue",
+            )
+            count_table.add_column("表格ID", style="cyan")
+            count_table.add_column("记录数", justify="right", style="green")
+            count_table.add_column("占比", justify="right", style="yellow")
+
+            total = result.get("actual_count", sum(table_counts.values()))
+
+            for table_id, count in sorted(table_counts.items()):
+                percentage = (count / total * 100) if total > 0 else 0
+                count_table.add_row(
+                    f"表格 {table_id}" if not isinstance(table_id, str) else table_id,
+                    str(count),
+                    f"{percentage:.1f}%",
+                )
+
+            console.print(count_table)
+
+
+@cli.command()
+@click.argument(
+    "input_path",
+    type=click.Path(exists=True),
+)
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(dir_okay=False),
+    default="cars_output.csv",
+    help="输出CSV文件路径",
+)
+@click.option("-v", "--verbose", is_flag=True, help="显示详细处理信息")
+@click.option("--preview", is_flag=True, help="显示文档内容预览")
+@click.option(
+    "--compare",
+    type=click.Path(exists=True, dir_okay=False),
+    help="与指定的CSV文件进行对比",
+)
+@click.option(
+    "--config",
+    type=click.Path(exists=True, dir_okay=False),
+    help="配置文件路径",
+)
+def process(
+    input_path: str,
+    output: str,
+    verbose: bool,
+    preview: bool,
+    compare: str | None,
+    config: str | None,
+) -> None:
+    """处理指定的docx文件或目录下的所有docx文件"""
     try:
-        processor = DocProcessor(doc_path, verbose, config)
-        return processor.process()
+        # 设置日志
+        setup_logging()
+        logger = logging.getLogger(__name__)
+        logger.info(f"开始处理任务: 输入={input_path}, 输出={output}")
+
+        # 加载配置
+        config_data = {}
+        if config:
+            try:
+                config_data = load_config(config)
+                logger.info(f"加载配置文件: {config}")
+            except ConfigurationError as e:
+                logger.error(f"加载配置失败: {str(e)}")
+                console.print(f"[bold red]加载配置失败: {str(e)}")
+                return
+
+        process_files(input_path, output, verbose, preview, compare, config_data)
+
     except Exception as e:
-        logging.error(f"处理文档 {doc_path} 失败: {str(e)}")
-        return []
+        logger.error(f"处理任务失败: {str(e)}")
+        console.print(f"[bold red]处理任务失败: {str(e)}")
 
 
 if __name__ == "__main__":
