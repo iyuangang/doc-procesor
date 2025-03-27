@@ -1,60 +1,14 @@
-# 文档处理器配置文件
-
-# 性能相关配置
-performance:
-  # 处理大块数据时的块大小
-  chunk_size: 1000
-  # 缓存大小限制（字节）
-  cache_size_limit: 52428800  # 50MB
-  # 缓存清理间隔（秒）
-  cleanup_interval: 300
-  # 大文件阈值（字节）
-  large_file_threshold: 104857600  # 100MB
-
-# 日志相关配置
+cache_size_limit: 52428800
+chunk_size: 1000
+cleanup_interval: 300
 logging:
+  file: logs/doc_processor.log
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
   level: INFO
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file:
-    enabled: true
-    path: "logs/doc_processor.log"
-    max_size: 10485760  # 10MB
-    backup_count: 5
-  console:
-    enabled: true
-    level: INFO
-
-# 数据处理配置
-processing:
-  # 是否跳过空行
-  skip_empty_rows: true
-  # 是否清理文本（删除多余空白字符等）
-  clean_text: true
-  # 是否验证数据完整性
-  validate_data: true
-  # 输出文件编码
-  output_encoding: "utf-8-sig"
-
-# 输出配置
-output:
-  # CSV文件分隔符
-  csv_separator: ","
-  # 是否包含表头
-  include_headers: true
-  # 是否输出处理统计信息
-  show_statistics: true
-  # 是否显示进度条
-  show_progress: true
-  # 是否在出错时显示详细信息
-  show_error_details: true
-
-# 调试配置
-debug:
-  # 是否启用详细日志
-  verbose: false
-  # 是否显示内存使用情况
-  show_memory_usage: false
-  # 是否显示处理时间
-  show_processing_time: true
-  # 是否保存调试信息到文件
-  save_debug_info: false 
+max_paragraphs_to_search: 30
+max_processes: 5
+max_tables_to_search: 5
+memory_limit: 1073741824
+preview: false
+skip_count_check: false
+verbose: false
