@@ -2,9 +2,8 @@ from pathlib import Path
 import pandas as pd  # type: ignore
 from docx import Document  # type: ignore
 from docx.document import Document as DocxDocument
-from docx.table import Table as DocxTable
 import re
-from typing import Dict, Any, Optional, List, Union, Set, Tuple
+from typing import Dict, Any, Optional, List, Set, Tuple, Callable, Union
 import click
 from rich.console import Console
 from rich.table import Table
@@ -12,13 +11,10 @@ from rich.panel import Panel
 from rich.progress import (
     Progress,
     SpinnerColumn,
-    TextColumn,
     BarColumn,
-    TaskProgressColumn,
     TimeRemainingColumn,
     TimeElapsedColumn,
 )
-from rich.syntax import Syntax
 from rich.text import Text
 from rich.tree import Tree
 import textwrap
@@ -29,7 +25,6 @@ from io import StringIO
 import time
 import psutil
 import os
-from lxml import etree
 import gc
 import logging
 import multiprocessing as mp
@@ -70,7 +65,7 @@ CN_NUMS = {
 @lru_cache(maxsize=1024)
 def cn_to_arabic(cn_num: str) -> str:
     """
-    将中文数字转换为阿拉伯数字，使用缓存提高性能
+    将中文数字转换为阿拉伯数字, 使用缓存提高性能
     """
     if cn_num.isdigit():
         return cn_num
@@ -100,7 +95,7 @@ def cn_to_arabic(cn_num: str) -> str:
     # 处理带十的两位数
     if "十" in cn_num:
         parts = cn_num.split("十")
-        # 直接在字符串格式化中使用CN_NUMS字典的值，避免类型转换
+        # 直接在字符串格式化中使用CN_NUMS字典的值, 避免类型转换
         if len(parts) == 1 or not parts[1]:
             return f"{CN_NUMS[parts[0]]}0"
         return f"{CN_NUMS[parts[0]]}{CN_NUMS[parts[1]]}"
@@ -111,13 +106,13 @@ def cn_to_arabic(cn_num: str) -> str:
 @lru_cache(maxsize=1024)
 def extract_batch_number(text: str) -> Optional[str]:
     """
-    从文本中提取批次号，使用缓存提高性能
+    从文本中提取批次号, 使用缓存提高性能
     """
     # 先尝试匹配完整的批次号格式
     match = BATCH_NUMBER_PATTERN.search(text)
     if match:
         num = match.group(1)
-        # 如果是纯数字，直接返回
+        # 如果是纯数字, 直接返回
         if num.isdigit():
             return num
 
@@ -127,7 +122,7 @@ def extract_batch_number(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             return None
 
-    # 如果没有找到批次号格式，尝试直接转换纯中文数字
+    # 如果没有找到批次号格式, 尝试直接转换纯中文数字
     if any(char in text for char in "一二三四五六七八九十百零"):
         try:
             # 提取连续的中文数字
@@ -143,18 +138,18 @@ def extract_batch_number(text: str) -> Optional[str]:
 @lru_cache(maxsize=1024)
 def clean_text(text: str) -> str:
     """
-    清理文本内容，使用缓存提高性能
+    清理文本内容, 使用缓存提高性能
     """
     # 移除多余的空白字符
     text = WHITESPACE_PATTERN.sub(" ", text.strip())
     # 统一全角字符到半角
-    text = text.replace("，", ",").replace("；", ";")
+    text = text.replace(", ", ",").replace("；", ";")
     return text
 
 
 def validate_car_info(
-    car_info: dict[str, Any],
-) -> tuple[bool, str, Optional[dict[str, Any]]]:
+    car_info: Dict[str, Any],
+) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
     """验证并尝试修复车辆信息"""
     # 基本验证
     if not car_info or not any(str(value).strip() for value in car_info.values()):
@@ -175,33 +170,43 @@ def validate_car_info(
 
     # 2. 标准化数值字段
     numeric_fields = ["排量(ml)", "整车整备质量(kg)", "综合燃料消耗量（L/100km）"]
-    for field in numeric_fields:
-        if field in fixed_info:
-            value = fixed_info[field]
+    for fields in numeric_fields:
+        if fields in fixed_info:
+            value = fixed_info[fields]
             if isinstance(value, str):
                 # 处理多个数值的情况（如范围值）
                 if "/" in value:
                     values = [float(v.strip()) for v in value.split("/") if v.strip()]
-                    fixed_info[field] = min(values)  # 使用最小值
+                    fixed_info[fields] = min(values)  # 使用最小值
                 else:
                     try:
-                        fixed_info[field] = float(value.replace("，", ","))
+                        fixed_info[fields] = float(value.replace(", ", ","))
                     except ValueError:
-                        logging.warning(f"无法转换数值: {field}={value}")
+                        logging.warning(f"无法转换数值: {fields}={value}")
 
     # 3. 确保必要字段存在
     required_fields = ["car_type", "category", "sub_type"]
-    for field in required_fields:
-        if field not in fixed_info:
-            return False, f"缺少必要字段: {field}", None
+    for fields in required_fields:
+        if fields not in fixed_info:
+            return False, f"缺少必要字段: {fields}", None
 
     return True, "", fixed_info
 
 
 def get_table_type(
     headers: List[str], current_category: Optional[str], current_type: Optional[str]
-) -> tuple[str, str]:
-    """根据表头判断表格类型，增加异常处理"""
+) -> Tuple[str, str]:
+    """
+    根据表头判断表格类型，使用当前上下文确定子类型
+
+    Args:
+        headers: 表头列表
+        current_category: 当前分类（节能型或新能源）
+        current_type: 当前子类型（表格所在的子分类）
+
+    Returns:
+        (category, sub_type)元组
+    """
     # 标准化表头
     normalized_headers = [h.strip().lower() for h in headers]
 
@@ -218,49 +223,70 @@ def get_table_type(
         normalized_headers[idx] = "变速器"
         normalized_headers.pop(idx + 1)
 
-    header_set: Set[str] = set(normalized_headers)
+    header_text = " ".join(normalized_headers).lower()
 
-    # 使用更严格的类型判断规则
-    type_rules = [
-        {
-            "category": "节能型",
-            "type": "（一）乘用车",
-            "required": {"排量(ml)", "综合燃料消耗量"},
-            "optional": {"变速器", "dct", "档位数"},
-        },
-        # ... 其他类型规则
+    # 只从表头判断category（节能型或新能源）
+    category = current_category or "未知"
+
+    # 节能型车辆的特征关键词
+    energy_saving_indicators = [
+        "排量(ml)",
+        "燃料消耗量",
+        "排量",
+        "油耗",
+        "发动机",
+        "cng",
+        "lng",
+        "燃气",
+        "天然气",
+        "燃料种类",
     ]
 
-    # 记录匹配的规则
-    matched_rules = []
-    for rule in type_rules:
-        required_set = set(rule["required"])  # 转换为集合以支持issubset操作
-        if required_set.issubset(header_set):
-            if "optional" not in rule or any(
-                opt in header_set for opt in rule["optional"]
-            ):
-                matched_rules.append(rule)
+    # 新能源车辆的特征关键词
+    new_energy_indicators = [
+        "电池",
+        "电动",
+        "纯电动续驶里程",
+        "动力电池",
+        "电量",
+        "电机",
+        "混合动力",
+        "燃料电池",
+        "充电",
+    ]
 
-    if len(matched_rules) == 1:
-        return matched_rules[0]["category"], matched_rules[0]["type"]
-    elif len(matched_rules) > 1:
-        # 记录多重匹配情况
-        logging.warning(f"表头 {headers} 匹配多个类型: {matched_rules}")
-        # 使用当前上下文选择最可能的类型
-        return (
-            current_category or matched_rules[0]["category"],
-            current_type or matched_rules[0]["type"],
-        )
+    # 检查表头是否包含节能型车辆特征
+    for indicator in energy_saving_indicators:
+        if indicator in header_text:
+            category = "节能型"
+            break
 
-    # 如果没有匹配规则，保持当前类型
-    return current_category or "未知", current_type or "未知"
+    # 检查表头是否包含新能源车辆特征
+    for indicator in new_energy_indicators:
+        if indicator in header_text:
+            category = "新能源"
+            break
+
+    # 如果在明确的节能型部分中，优先使用节能型分类
+    if "节能型" in str(current_category).lower():
+        category = "节能型"
+
+    # 如果在明确的新能源部分中，优先使用新能源分类
+    if "新能源" in str(current_category).lower():
+        category = "新能源"
+
+    # 始终使用当前上下文的子类型，不从表头判断
+    sub_type = current_type or "未知"
+
+    # 确保返回的是字符串类型
+    return str(category), str(sub_type)
 
 
 def process_car_info(
-    car_info: dict[str, Any], batch_number: Optional[str] = None
-) -> dict[str, Any]:
+    car_info: Dict[str, Any], batch_number: Optional[str] = None
+) -> Dict[str, Any]:
     """
-    处理车辆信息，合并和标准化字段
+    处理车辆信息, 合并和标准化字段
 
     Args:
         car_info: 原始车辆信息字典
@@ -276,9 +302,9 @@ def process_car_info(
     # 合并型号字段
     model_fields = ["产品型号", "车辆型号", "型号"]
     model_values = []
-    for field in model_fields:
-        if field in car_info:
-            value = car_info.pop(field) if field != "型号" else car_info.get(field)
+    for fields in model_fields:
+        if fields in car_info:
+            value = car_info.pop(fields) if fields != "型号" else car_info.get(fields)
             if value and str(value).strip():
                 model_values.append(clean_text(str(value)))
 
@@ -286,7 +312,7 @@ def process_car_info(
         car_info["型号"] = model_values[0]  # 使用第一个非空的型号
 
     # 标准化字段名称
-    field_mapping = {
+    field_mapping: Dict[str, str] = {
         "通用名称": "品牌",
         "商标": "品牌",
         "生产企业": "企业名称",
@@ -300,7 +326,7 @@ def process_car_info(
             if value and str(value).strip():
                 car_info[new_field] = clean_text(str(value))
 
-    # 清理其他字段的文本，但保留所有值
+    # 清理其他字段的文本, 但保留所有值
     for key in car_info:
         if isinstance(car_info[key], str):
             car_info[key] = clean_text(car_info[key])
@@ -308,19 +334,19 @@ def process_car_info(
     return car_info
 
 
-def extract_doc_content(doc_path: str) -> tuple[list[str], list[dict[str, str]]]:
+def extract_doc_content(doc_path: str) -> Tuple[List[str], List[Dict[str, str]]]:
     """
-    提取文档中除表格外的内容，并分离额外信息
+    提取文档中除表格外的内容, 并分离额外信息
     """
     doc: DocxDocument = Document(doc_path)
-    paragraphs: list[str] = []
-    extra_info: list[dict[str, str]] = []
+    paragraphs: List[str] = []
+    extra_info: List[Dict[str, str]] = []
     current_section: Optional[str] = None
     batch_found = False
     batch_number = None
 
     # 额外信息的标识词和对应类型
-    info_types: dict[str, str] = {
+    info_types: Dict[str, str] = {
         "勘误": "勘误",
         "关于": "政策",
         "符合": "说明",
@@ -330,7 +356,7 @@ def extract_doc_content(doc_path: str) -> tuple[list[str], list[dict[str, str]]]
     }
 
     # 用于收集连续的额外信息文本
-    current_extra_info: Optional[dict[str, str]] = None
+    current_extra_info: Optional[Dict[str, str]] = None
 
     def save_current_extra_info() -> None:
         """保存当前的额外信息"""
@@ -367,7 +393,7 @@ def extract_doc_content(doc_path: str) -> tuple[list[str], list[dict[str, str]]]
     for para in doc.paragraphs:
         text = para.text.strip()
         if not text:
-            # 如果遇到空行，保存当前的额外信息
+            # 如果遇到空行, 保存当前的额外信息
             if current_extra_info:
                 save_current_extra_info()
             continue
@@ -382,18 +408,18 @@ def extract_doc_content(doc_path: str) -> tuple[list[str], list[dict[str, str]]]
                 continue
 
         # 识别主要分类
-        if text.startswith("一、") or text.startswith("二、"):
+        if "节能型汽车" in text or "新能源汽车" in text:
             save_current_extra_info()
             current_section = text
             paragraphs.append(text)
-        # 识别子分类
-        elif text.startswith("（"):
+        # 识别子分类,排除括号中有数字的
+        elif text.startswith("（") and not any(str.isdigit() for str in text):
             save_current_extra_info()
             current_section = text
             paragraphs.append(text)
         # 识别额外信息
         elif any(marker in text for marker in info_types.keys()):
-            # 如果当前文本包含新的标识词，保存之前的信息并创建新的
+            # 如果当前文本包含新的标识词, 保存之前的信息并创建新的
             if current_extra_info:
                 save_current_extra_info()
 
@@ -404,7 +430,7 @@ def extract_doc_content(doc_path: str) -> tuple[list[str], list[dict[str, str]]]
                 "type": info_type,
                 "content": text,
             }
-        # 如果当前有未处理的额外信息，将文本追加到内容中
+        # 如果当前有未处理的额外信息, 将文本追加到内容中
         elif current_extra_info is not None:
             current_extra_info["content"] = current_extra_info["content"] + " " + text
         else:
@@ -417,7 +443,7 @@ def extract_doc_content(doc_path: str) -> tuple[list[str], list[dict[str, str]]]
 
 
 def print_docx_content(doc_path: str) -> None:
-    """打印文档内容预览，显示所有元素的详细信息"""
+    """打印文档内容预览, 显示所有元素的详细信息"""
     try:
         doc: DocxDocument = Document(doc_path)
         console.print(
@@ -440,9 +466,9 @@ def print_docx_content(doc_path: str) -> None:
                 )
                 if "批" in text:
                     para_node.add(f"🔖 [bold red]{text}[/bold red]")
-                elif text.startswith(("一、", "二、")):
+                elif "节能型汽车" in text or "新能源汽车" in text:
                     para_node.add(f"📌 [bold green]{text}[/bold green]")
-                elif text.startswith("（"):
+                elif text.startswith("（") and not any(str.isdigit() for str in text):
                     para_node.add(f"📎 [bold yellow]{text}[/bold yellow]")
                 elif any(
                     marker in text
@@ -497,7 +523,7 @@ def display_statistics(
     total_count: int, energy_saving_count: int, new_energy_count: int, output_file: str
 ) -> None:
     """Display processing statistics in a formatted table."""
-    # 在显示表格前添加标题，表明这是关键信息
+    # 在显示表格前添加标题, 表明这是关键信息
     console.print()
     console.print("[bold cyan]📊 关键信息：处理统计报告[/bold cyan]")
 
@@ -538,7 +564,7 @@ def display_statistics(
 
 @dataclass
 class DocumentNode:
-    """文档节点类，用于构建文档树结构"""
+    """文档节点类, 用于构建文档树结构"""
 
     title: str
     level: int
@@ -550,9 +576,9 @@ class DocumentNode:
 
 
 class DocumentStructure:
-    """文档结构类，用于构建和管理文档的层级结构"""
+    """文档结构类, 用于构建和管理文档的层级结构"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.root = DocumentNode("文档结构", 0, "root")
         self.current_section: Optional[DocumentNode] = None
         self.current_subsection: Optional[DocumentNode] = None
@@ -589,7 +615,7 @@ class DocumentStructure:
             metadata=metadata or {},
         )
 
-        # 如果指定了父节点，直接添加到父节点
+        # 如果指定了父节点, 直接添加到父节点
         if parent_node:
             parent_node.children.append(node)
             return node
@@ -612,7 +638,7 @@ class DocumentStructure:
 
         return node
 
-    def set_batch_number(self, batch_number: str):
+    def set_batch_number(self, batch_number: str) -> None:
         """设置批次号"""
         self.batch_number = batch_number
 
@@ -657,7 +683,7 @@ def display_doc_content(doc_structure: DocumentStructure) -> None:
 
         # 构建节点标题
         title = f"{icon} {node.title}"
-        if node.batch_number and node.level <= 2:
+        if node.batch_number and node.level <= 1:
             title += f" [dim](第{node.batch_number}批)[/dim]"
 
         # 创建节点
@@ -690,7 +716,7 @@ def display_doc_content(doc_structure: DocumentStructure) -> None:
     console.print()
 
 
-def display_comparison(new_models: set[str], removed_models: set[str]):
+def display_comparison(new_models: Set[str], removed_models: Set[str]) -> None:
     """显示型号对比结果"""
     # 创建对比表格
     compare_table = Table(
@@ -725,7 +751,7 @@ def display_comparison(new_models: set[str], removed_models: set[str]):
 
 
 @click.group()
-def cli():
+def cli() -> None:
     """处理车辆数据文档的命令行工具"""
     pass
 
@@ -733,7 +759,8 @@ def cli():
 def extract_car_info(doc_path: str, verbose: bool = False) -> List[Dict[str, Any]]:
     """从docx文件中提取车辆信息"""
     processor = DocProcessor(doc_path, verbose)
-    return processor.process()
+    result: List[Dict[str, Any]] = processor.process()
+    return result
 
 
 def get_memory_usage() -> str:
@@ -746,20 +773,21 @@ def get_memory_usage() -> str:
 def process_doc(
     doc_path: str, verbose: bool = False, config: Optional[dict] = None
 ) -> List[Dict[str, Any]]:
-    """单个文档处理函数，用于多进程"""
+    """单个文档处理函数, 用于多进程"""
     try:
-        # 如果是简洁模式，抑制详细输出但保留三项关键信息
+        # 如果是简洁模式, 抑制详细输出但保留三项关键信息
         processor = DocProcessor(doc_path, verbose, config)
-        return processor.process()
+        result: List[Dict[str, Any]] = processor.process()
+        return result
     except Exception as e:
         logging.error(f"处理文档 {doc_path} 失败: {str(e)}")
         return []
 
 
-def verify_all_batches(all_cars_data: List[Dict[str, Any]]) -> dict:
+def verify_all_batches(all_cars_data: List[Dict[str, Any]]) -> Dict[str, Any]:
     """验证所有批次的数据一致性"""
     # 按批次分组
-    batch_data = {}
+    batch_data: Dict[str, List[Dict[str, Any]]] = {}
     for car in all_cars_data:
         batch = car.get("batch")
         if not batch:
@@ -788,7 +816,7 @@ def verify_all_batches(all_cars_data: List[Dict[str, Any]]) -> dict:
     return results
 
 
-def display_batch_verification(batch_results: dict):
+def display_batch_verification(batch_results: Dict[str, Any]) -> None:
     """显示批次验证结果"""
     if not batch_results:
         console.print(
@@ -814,7 +842,7 @@ def display_batch_verification(batch_results: dict):
     summary_table.add_column("记录数", justify="right", style="green")
     summary_table.add_column("表格数", justify="right", style="yellow")
 
-    # 计算批次总数，如果超过一定数量，只显示部分
+    # 计算批次总数, 如果超过一定数量, 只显示部分
     batch_count = len(batch_results)
     show_all = batch_count <= 50  # 只有50个批次以内才全部显示
 
@@ -824,7 +852,7 @@ def display_batch_verification(batch_results: dict):
 
     sorted_batches = sorted(batch_results.items())
 
-    # 如果批次太多，只显示前20个和后20个
+    # 如果批次太多, 只显示前20个和后20个
     if not show_all:
         display_batches = sorted_batches[:20] + sorted_batches[-20:]
         console.print(
@@ -839,7 +867,7 @@ def display_batch_verification(batch_results: dict):
         total_tables += table_count
         summary_table.add_row(f"第{batch}批", str(data["total"]), str(table_count))
 
-    # 如果有省略的批次，添加省略提示行
+    # 如果有省略的批次, 添加省略提示行
     if not show_all and batch_count > 40:
         summary_table.add_row(f"... (省略 {batch_count - 40} 个批次) ...", "...", "...")
 
@@ -850,7 +878,7 @@ def display_batch_verification(batch_results: dict):
         f"[bold]{total_tables}[/bold]",
     )
 
-    # 在表格前添加标题，表明这是关键信息
+    # 在表格前添加标题, 表明这是关键信息
     console.print()
     console.print("[bold cyan]📊 关键信息：批次数据汇总[/bold cyan]")
     console.print(summary_table)
@@ -862,7 +890,7 @@ def process_files(
     output: str,
     verbose: bool = False,
     preview: bool = False,
-    compare: str | None = None,
+    compare: Optional[str] = None,
     config: Optional[dict] = None,
 ) -> None:
     """处理指定的docx文件或目录下的所有docx文件的核心逻辑"""
@@ -904,7 +932,7 @@ def process_files(
                 transient=True,
             ) as progress:
                 main_task = progress.add_task(
-                    f"[bold cyan]🔄 处理文件", total=len(doc_files)
+                    "[bold cyan]🔄 处理文件", total=len(doc_files)
                 )
 
                 # 使用partial固定参数
@@ -920,7 +948,7 @@ def process_files(
                     if cars:
                         all_cars_data.extend(cars)
                         logger.info(
-                            f"✅ 文件 {doc_file} 处理完成，提取到 {len(cars)} 条记录"
+                            f"✅ 文件 {doc_file} 处理完成, 提取到 {len(cars)} 条记录"
                         )
                     else:
                         error_files.append(doc_file)
@@ -938,7 +966,7 @@ def process_files(
                 # 验证所有批次的数据一致性
                 batch_results = verify_all_batches(all_cars_data)
 
-                # 始终显示批次验证结果，即使在简洁模式下
+                # 始终显示批次验证结果, 即使在简洁模式下
                 display_batch_verification(batch_results)
 
                 # 估计数据大小
@@ -947,15 +975,17 @@ def process_files(
 
                 if is_large_dataset:
                     logger.info(
-                        f"大数据集 ({len(all_cars_data)} 条记录)，使用优化处理..."
+                        f"大数据集 ({len(all_cars_data)} 条记录), 使用优化处理..."
                     )
 
                     # 使用分块处理
                     chunk_size = 50000
                     with open(output, "w", encoding="utf-8-sig") as f:
                         # 写入表头
-                        first_batch = all_cars_data[:100]  # 取前100条确定字段
-                        all_fields = set()
+                        first_batch: List[Dict[str, Any]] = all_cars_data[
+                            :100
+                        ]  # 取前100条确定字段
+                        all_fields: Set[str] = set()
                         for car in first_batch:
                             all_fields.update(car.keys())
 
@@ -1003,7 +1033,7 @@ def process_files(
                             del chunk_df
                             gc.collect()
 
-                    logger.info(f"💾 处理完成，保存结果到: {output}")
+                    logger.info(f"💾 处理完成, 保存结果到: {output}")
                     logger.info(f"📊 总记录数: {len(all_cars_data)}")
 
                     # 计算统计数据
@@ -1014,7 +1044,7 @@ def process_files(
                         1 for car in all_cars_data if car.get("car_type") == 1
                     )
 
-                    # 始终显示统计信息，即使在简洁模式下
+                    # 始终显示统计信息, 即使在简洁模式下
                     display_statistics(
                         len(all_cars_data),
                         energy_saving_count,
@@ -1047,10 +1077,10 @@ def process_files(
                     all_cars_df = all_cars_df[final_columns]
                     all_cars_df.to_csv(output, index=False, encoding="utf-8-sig")
 
-                    logger.info(f"💾 处理完成，保存结果到: {output}")
+                    logger.info(f"💾 处理完成, 保存结果到: {output}")
                     logger.info(f"📊 总记录数: {len(all_cars_df)}")
 
-                    # 始终显示统计信息，即使在简洁模式下
+                    # 始终显示统计信息, 即使在简洁模式下
                     display_statistics(
                         len(all_cars_df),
                         len(all_cars_df[all_cars_df["car_type"] == 2]),
@@ -1058,7 +1088,7 @@ def process_files(
                         output,
                     )
 
-                # 如果有处理失败的文件，显示警告
+                # 如果有处理失败的文件, 显示警告
                 if error_files:
                     error_msg = "❌ 以下文件处理失败:\n" + "\n".join(
                         f"  • {f}" for f in error_files
@@ -1129,8 +1159,8 @@ def load_document(doc_path: str) -> DocxDocument:
     return Document(doc_path)
 
 
-def profile_function(func):
-    def wrapper(*args, **kwargs):
+def profile_function(func: Callable[..., Any]) -> Callable[..., Any]:
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         profile = cProfile.Profile()
         try:
             return profile.runcall(func, *args, **kwargs)
@@ -1144,8 +1174,10 @@ def profile_function(func):
 
 
 def setup_logging(
-    default_path="logging.yaml", default_level=logging.INFO, env_key="LOG_CFG"
-):
+    default_path: str = "logging.yaml",
+    default_level: Union[str, int] = logging.INFO,
+    env_key: str = "LOG_CFG",
+) -> None:
     """配置日志记录"""
     path = os.getenv(env_key, default_path)
     if os.path.exists(path):
@@ -1160,7 +1192,7 @@ def setup_logging(
         setup_default_logging(default_level)
 
 
-def setup_default_logging(level):
+def setup_default_logging(level: Any) -> None:
     """设置默认日志配置"""
     log_dir = "logs"
     if not os.path.exists(log_dir):
@@ -1197,12 +1229,12 @@ class DocumentError(Exception):
     pass
 
 
-def load_config(config_path: str = "config.yaml") -> dict:
+def load_config(config_path: str = "config.yaml") -> Dict[Any, Any]:
     """加载配置文件"""
     try:
         if os.path.exists(config_path):
             with open(config_path, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
+                config: Dict[Any, Any] = yaml.safe_load(f)
             return config
         return {}
     except Exception as e:
@@ -1261,8 +1293,8 @@ class DocProcessor:
             None  # 用于跟踪带数字编号的节点
         )
 
-    def _load_document(self):
-        """安全加载文档，处理大文件"""
+    def _load_document(self) -> None:
+        """安全加载文档, 处理大文件"""
         try:
             file_size = os.path.getsize(self.doc_path)
             self.logger.info(
@@ -1270,7 +1302,7 @@ class DocProcessor:
             )
 
             if file_size > 100 * 1024 * 1024:  # 100MB
-                self.logger.warning(f"文档大小超过100MB，使用临时文件处理")
+                self.logger.warning("文档大小超过100MB, 使用临时文件处理")
                 with tempfile.NamedTemporaryFile(delete=False) as tmp:
                     shutil.copy2(self.doc_path, tmp.name)
                     self.doc = Document(tmp.name)
@@ -1281,7 +1313,7 @@ class DocProcessor:
             self.logger.error(f"加载文档失败: {str(e)}")
             raise DocumentError(f"无法加载文档 {self.doc_path}: {str(e)}")
 
-    def _check_and_cleanup_cache(self):
+    def _check_and_cleanup_cache(self) -> None:
         """检查并清理缓存"""
         current_time = time.time()
         if current_time - self._last_cache_cleanup > self._cleanup_interval:
@@ -1291,7 +1323,7 @@ class DocProcessor:
                 gc.collect()
             self._last_cache_cleanup = current_time
 
-    def _extract_table_cells_fast(self, table) -> List[List[str]]:
+    def _extract_table_cells_fast(self, table: Any) -> List[List[str]]:
         """优化的表格提取方法"""
         try:
             rows = []
@@ -1330,7 +1362,7 @@ class DocProcessor:
             return []
 
     def _process_merged_headers(self, headers: List[str]) -> List[str]:
-        """处理合并的表头，例如将'型式'和'档位数'合并为'变速器'"""
+        """处理合并的表头, 例如将'型式'和'档位数'合并为'变速器'"""
         processed = []
         i = 0
         while i < len(headers):
@@ -1349,7 +1381,7 @@ class DocProcessor:
     def _process_data_row(
         self, row: List[str], last_company: str, last_brand: str
     ) -> Optional[List[str]]:
-        """处理数据行，包括空值处理和数据继承"""
+        """处理数据行, 包括空值处理和数据继承"""
         # 跳过全空行
         if not any(cell.strip() for cell in row):
             return None
@@ -1376,23 +1408,24 @@ class DocProcessor:
         优化版本：限制搜索范围并提供跳过选项
 
         Returns:
-            Optional[int]: 声明的总记录数，如果未找到则返回None
+            Optional[int]: 声明的总记录数, 如果未找到则返回None
         """
-        # 如果配置了跳过总记录数检查，直接返回None
+        # 如果配置了跳过总记录数检查, 直接返回None
         if self._skip_count_check:
             self.logger.info("根据配置跳过总记录数检查")
             return None
 
-        # 获取文件大小，如果超过阈值直接跳过
+        # 获取文件大小, 如果超过阈值直接跳过
         try:
             file_size = os.path.getsize(self.doc_path) / (1024 * 1024)  # MB
             if file_size > 50:  # 超过50MB的文档
                 self.logger.info(
-                    f"文档大小 {file_size:.2f}MB 超过阈值，跳过总记录数检查"
+                    f"文档大小 {file_size:.2f}MB 超过阈值, 跳过总记录数检查"
                 )
                 return None
-        except:
-            pass  # 如果无法获取文件大小，继续检查
+        except Exception as e:
+            self.logger.error(f"获取文件大小失败: {str(e)}")
+            pass  # 如果无法获取文件大小, 继续检查
 
         start_time = time.time()
 
@@ -1428,12 +1461,12 @@ class DocProcessor:
             if not table.rows:
                 continue
 
-            # 只检查表格的前3行和后3行，这些位置最可能出现合计信息
+            # 只检查表格的前3行和后3行, 这些位置最可能出现合计信息
             rows_to_check = []
             if len(table.rows) > 6:
                 rows_to_check = list(table.rows[:3]) + list(table.rows[-3:])
             else:
-                rows_to_check = table.rows
+                rows_to_check = list(table.rows)
 
             for row in rows_to_check:
                 cells = [cell.text.strip() for cell in row.cells]
@@ -1456,7 +1489,7 @@ class DocProcessor:
     def _extract_car_info(
         self, table_index: int, batch_number: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """从表格中提取车辆信息，使用优化的处理方式"""
+        """从表格中提取车辆信息, 使用优化的处理方式"""
         # 检查缓存
         if table_index in self._table_cache:
             return self._table_cache[table_index]
@@ -1487,8 +1520,24 @@ class DocProcessor:
                 console.print(f"第一行数据示例: {all_rows[1]}")
 
         # 根据表头判断表格类型
+        current_subsection_title = (
+            self.current_subsection.title if self.current_subsection else None
+        )
+        self.logger.debug(
+            f"表格 {table_index + 1} 上下文信息: 分类={self.current_category}, 子分类={current_subsection_title}"
+        )
+
         table_category, table_type = get_table_type(
-            headers, self.current_category, self.current_type
+            headers, self.current_category, current_subsection_title
+        )
+
+        # 如果当前在子分类中，确保使用正确的子分类名称
+        if self.current_subsection and table_type == "未知":
+            table_type = self.current_subsection.title
+            self.logger.debug(f"表格 {table_index + 1} 使用当前子分类: {table_type}")
+
+        self.logger.info(
+            f"表格 {table_index + 1} 类型判断: 分类={table_category}, 子分类={table_type}"
         )
 
         # 预先创建基础信息
@@ -1497,12 +1546,12 @@ class DocProcessor:
             "sub_type": table_type,
             "car_type": 2 if table_category == "节能型" else 1,
             "batch": batch_number,
-            "table_id": table_index + 1,  # 添加表格ID，从1开始计数
+            "table_id": table_index + 1,  # 添加表格ID, 从1开始计数
         }
 
         total_rows = len(all_rows) - 1
         if total_rows > 100:
-            console.print(f"[dim]开始处理大表格，共 {total_rows} 行[/dim]")
+            console.print(f"[dim]开始处理大表格, 共 {total_rows} 行[/dim]")
 
         # 分块处理数据行
         for chunk_start in range(1, len(all_rows), self._chunk_size):
@@ -1515,12 +1564,12 @@ class DocProcessor:
                 if not any(str(cell).strip() for cell in cells):
                     continue
 
-                # 记录列数不匹配的情况，但仍然处理数据
+                # 记录列数不匹配的情况, 但仍然处理数据
                 if len(cells) != len(headers):
                     if self.verbose:
                         console.print(
                             f"[yellow]表格 {table_index + 1} 第 {row_idx} 行列数不匹配: "
-                            f"预期 {len(headers)} 列，实际 {len(cells)} 列[/yellow]"
+                            f"预期 {len(headers)} 列, 实际 {len(cells)} 列[/yellow]"
                         )
                         console.print(f"行内容: {cells}")
                     # 调整单元格数量以匹配表头
@@ -1529,11 +1578,11 @@ class DocProcessor:
                     else:
                         cells.extend([""] * (len(headers) - len(cells)))
 
-                # 创建新的字典，避免引用同一个对象
+                # 创建新的字典, 避免引用同一个对象
                 car_info = base_info.copy()
                 car_info["raw_text"] = " | ".join(str(cell) for cell in cells)
 
-                # 使用zip优化字段映射，同时清理文本
+                # 使用zip优化字段映射, 同时清理文本
                 car_info.update(
                     {
                         header: clean_text(str(value))
@@ -1562,8 +1611,8 @@ class DocProcessor:
         elapsed = time.time() - start_time
         if total_rows > 100 or len(table_cars) > 0:
             console.print(
-                f"[dim]表格 {table_index + 1} 处理了 {total_rows} 行，"
-                f"数据 {len(table_cars)} 行，耗时: {elapsed:.2f}秒[/dim]"
+                f"[dim]表格 {table_index + 1} 处理了 {total_rows} 行, "
+                f"数据 {len(table_cars)} 行, 耗时: {elapsed:.2f}秒[/dim]"
             )
 
         return table_cars
@@ -1577,7 +1626,7 @@ class DocProcessor:
             console.print(f"[dim]{operation} 耗时: {elapsed:.2f}秒[/dim]")
         self.start_time = current_time
 
-    @profile_function
+    # @profile_function
     def process(self) -> List[Dict[str, Any]]:
         """处理文档并返回所有车辆信息"""
         try:
@@ -1608,7 +1657,7 @@ class DocProcessor:
                                 )
 
                         # 更新分类信息
-                        if "一、节能型汽车" in text:
+                        if "节能型汽车" in text:
                             self.current_category = "节能型"
                             self.current_section = self.doc_structure.add_node(
                                 "节能型汽车", "section", content=text
@@ -1616,7 +1665,7 @@ class DocProcessor:
                             self.current_subsection = None
                             self.current_numbered_section = None
                             self.logger.debug(f"更新分类: {self.current_category}")
-                        elif "二、新能源汽车" in text:
+                        elif "新能源汽车" in text:
                             self.current_category = "新能源"
                             self.current_section = self.doc_structure.add_node(
                                 "新能源汽车", "section", content=text
@@ -1624,7 +1673,9 @@ class DocProcessor:
                             self.current_subsection = None
                             self.current_numbered_section = None
                             self.logger.debug(f"更新分类: {self.current_category}")
-                        elif text.startswith("（") and "）" in text:
+                        elif text.startswith("（") and not any(
+                            str.isdigit() for str in text
+                        ):
                             self.current_subsection = self.doc_structure.add_node(
                                 text.strip(),
                                 "subsection",
@@ -1713,6 +1764,10 @@ class DocProcessor:
                                             if table.rows
                                             else 0,
                                             "records": len(table_cars),
+                                            "category": self.current_category,
+                                            "sub_type": self.current_subsection.title
+                                            if self.current_subsection
+                                            else None,
                                         },
                                         parent_node=parent_node,
                                     )
@@ -1748,18 +1803,18 @@ class DocProcessor:
             file_size = os.path.getsize(self.doc_path) / (1024 * 1024)  # MB
             record_count = len(self.cars)
 
-            # 对于大文件或大量记录，禁用详细显示以提高性能
-            is_large_file = file_size > 50 or record_count > 10000  # 50MB或1万条记录
+            # 对于大文件或大量记录, 禁用详细显示以提高性能
+            is_large_file = file_size > 50 or record_count > 100000  # 50MB或1万条记录
 
             # 显示文档结构（仅在详细模式下）
             if self.verbose and not is_large_file:
                 display_doc_content(self.doc_structure)
             elif self.verbose and is_large_file:
                 console.print(
-                    "[yellow]文件较大，跳过显示详细文档结构以提高性能[/yellow]"
+                    "[yellow]文件较大, 跳过显示详细文档结构以提高性能[/yellow]"
                 )
 
-            # 显示批次一致性验证结果（始终显示，即使在简洁模式下）
+            # 显示批次一致性验证结果（始终显示, 即使在简洁模式下）
             self._display_consistency_result(consistency_result)
 
             # 处理完成后主动释放资源
@@ -1775,12 +1830,12 @@ class DocProcessor:
     def verify_batch_consistency(self) -> dict:
         """
         验证每个批次的表格数据总和是否与批次总记录数一致
-        即便没有声明的总记录数，也验证表格记录数与处理后的记录数是否一致
+        即便没有声明的总记录数, 也验证表格记录数与处理后的记录数是否一致
 
         Returns:
             dict: 包含批次验证结果的字典
         """
-        # 如果没有批次号，直接返回
+        # 如果没有批次号, 直接返回
         if not self.batch_number:
             return {"status": "no_batch", "message": "未找到批次号"}
 
@@ -1801,11 +1856,11 @@ class DocProcessor:
 
         # 验证结果
         if self.declared_count is not None:
-            # 如果有声明的总记录数，比较声明数与实际数
+            # 如果有声明的总记录数, 比较声明数与实际数
             if total_extracted_count == self.declared_count:
                 return {
                     "status": "match",
-                    "message": f"批次记录数匹配：声明 {self.declared_count}，实际 {total_extracted_count}",
+                    "message": f"批次记录数匹配：声明 {self.declared_count}, 实际 {total_extracted_count}",
                     "batch": self.batch_number,
                     "actual_count": total_extracted_count,
                     "declared_count": self.declared_count,
@@ -1814,7 +1869,7 @@ class DocProcessor:
             else:
                 return {
                     "status": "mismatch",
-                    "message": f"批次记录数不匹配：声明 {self.declared_count}，实际 {total_extracted_count}",
+                    "message": f"批次记录数不匹配：声明 {self.declared_count}, 实际 {total_extracted_count}",
                     "batch": self.batch_number,
                     "actual_count": total_extracted_count,
                     "declared_count": self.declared_count,
@@ -1822,7 +1877,7 @@ class DocProcessor:
                     "difference": self.declared_count - total_extracted_count,
                 }
         else:
-            # 如果没有声明的总记录数，验证表格总记录数与处理后的记录数是否一致
+            # 如果没有声明的总记录数, 验证表格总记录数与处理后的记录数是否一致
             processed_count = len(self.cars)
             if total_extracted_count == processed_count:
                 return {
@@ -1844,16 +1899,16 @@ class DocProcessor:
                     "difference": total_extracted_count - processed_count,
                 }
 
-    def _display_consistency_result(self, result: dict):
+    def _display_consistency_result(self, result: Dict[str, Any]) -> None:
         """显示批次一致性验证结果"""
-        # 在显示结果前添加标题，表明这是关键信息
+        # 在显示结果前添加标题, 表明这是关键信息
         console.print()
         console.print("[bold cyan]📊 关键信息：数据一致性检查[/bold cyan]")
 
         if result["status"] == "no_batch":
             console.print(
                 Panel(
-                    "[yellow]⚠️ 未找到批次号，无法验证数据一致性[/yellow]",
+                    "[yellow]⚠️ 未找到批次号, 无法验证数据一致性[/yellow]",
                     title="数据一致性检查",
                     border_style="yellow",
                 )
@@ -1863,7 +1918,7 @@ class DocProcessor:
         if result["status"] == "unknown":
             console.print(
                 Panel(
-                    f"[yellow]⚠️ 第{result['batch']}批：未找到总记录数声明，实际记录数为 {result['actual_count']}[/yellow]",
+                    f"[yellow]⚠️ 第{result['batch']}批：未找到总记录数声明, 实际记录数为 {result['actual_count']}[/yellow]",
                     title="数据一致性检查",
                     border_style="yellow",
                 )
@@ -1871,7 +1926,7 @@ class DocProcessor:
         elif result["status"] == "match":
             console.print(
                 Panel(
-                    f"[green]✅ 第{result['batch']}批：记录数匹配，共 {result['actual_count']} 条记录[/green]",
+                    f"[green]✅ 第{result['batch']}批：记录数匹配, 共 {result['actual_count']} 条记录[/green]",
                     title="数据一致性检查",
                     border_style="green",
                 )
@@ -1882,7 +1937,7 @@ class DocProcessor:
             )
             console.print(
                 Panel(
-                    f"[red]❌ 第{result['batch']}批：记录数不匹配！声明 {result['declared_count']}，实际 {result['actual_count']}，{diff_text}[/red]",
+                    f"[red]❌ 第{result['batch']}批：记录数不匹配！声明 {result['declared_count']}, 实际 {result['actual_count']}, {diff_text}[/red]",
                     title="⚠️ 数据一致性检查",
                     border_style="red",
                 )
@@ -1890,7 +1945,7 @@ class DocProcessor:
         elif result["status"] == "internal_match":
             console.print(
                 Panel(
-                    f"[green]✅ 第{result['batch']}批：内部一致性检查通过，表格记录总数 {result['actual_count']} 与处理结果数 {result['processed_count']} 一致[/green]",
+                    f"[green]✅ 第{result['batch']}批：内部一致性检查通过, 表格记录总数 {result['actual_count']} 与处理结果数 {result['processed_count']} 一致[/green]",
                     title="数据一致性检查",
                     border_style="green",
                 )
@@ -1901,7 +1956,7 @@ class DocProcessor:
             )
             console.print(
                 Panel(
-                    f"[red]❌ 第{result['batch']}批：内部一致性检查失败！表格记录总数 {result['actual_count']} 与处理结果数 {result['processed_count']} 不一致，{diff_text}[/red]",
+                    f"[red]❌ 第{result['batch']}批：内部一致性检查失败！表格记录总数 {result['actual_count']} 与处理结果数 {result['processed_count']} 不一致, {diff_text}[/red]",
                     title="⚠️ 数据一致性检查",
                     border_style="red",
                 )
@@ -1963,8 +2018,8 @@ def process(
     output: str,
     verbose: bool,
     preview: bool,
-    compare: str | None,
-    config: str | None,
+    compare: Optional[str] = None,
+    config: Optional[str] = None,
 ) -> None:
     """处理指定的docx文件或目录下的所有docx文件"""
     try:
