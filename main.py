@@ -1,10 +1,10 @@
 from pathlib import Path
 import pandas as pd  # type: ignore
 from docx import Document  # type: ignore
-from docx.document import Document as DocxDocument
+from docx.document import Document as DocxDocument  # type: ignore
 import re
 from typing import Dict, Any, Optional, List, Set, Tuple, Callable, Union
-import click
+import click  # type: ignore
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -23,14 +23,14 @@ import cProfile
 import pstats
 from io import StringIO
 import time
-import psutil
+import psutil  # type: ignore
 import os
 import gc
 import logging
 import multiprocessing as mp
 import tempfile
 import shutil
-import yaml
+import yaml  # type: ignore
 import logging.config
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -185,7 +185,7 @@ def validate_car_info(
                         logging.warning(f"无法转换数值: {fields}={value}")
 
     # 3. 确保必要字段存在
-    required_fields = ["car_type", "category", "sub_type"]
+    required_fields = ["energytpye", "category", "sub_type"]
     for fields in required_fields:
         if fields not in fixed_info:
             return False, f"缺少必要字段: {fields}", None
@@ -304,12 +304,12 @@ def process_car_info(
     model_values = []
     for fields in model_fields:
         if fields in car_info:
-            value = car_info.pop(fields) if fields != "型号" else car_info.get(fields)
+            value = car_info.pop(fields) if fields != "vmodel" else car_info.get(fields)
             if value and str(value).strip():
                 model_values.append(clean_text(str(value)))
 
     if model_values:
-        car_info["型号"] = model_values[0]  # 使用第一个非空的型号
+        car_info["vmodel"] = model_values[0]  # 使用第一个非空的型号
 
     # 标准化字段名称
     field_mapping: Dict[str, str] = {
@@ -991,13 +991,13 @@ def process_files(
 
                         base_columns = [
                             "batch",
-                            "car_type",
+                            "energytpye",
+                            "vmodel",
                             "category",
                             "sub_type",
                             "序号",
                             "企业名称",
                             "品牌",
-                            "型号",
                             "table_id",
                             "raw_text",
                         ]
@@ -1038,10 +1038,10 @@ def process_files(
 
                     # 计算统计数据
                     energy_saving_count = sum(
-                        1 for car in all_cars_data if car.get("car_type") == 2
+                        1 for car in all_cars_data if car.get("energytpye") == 2
                     )
                     new_energy_count = sum(
-                        1 for car in all_cars_data if car.get("car_type") == 1
+                        1 for car in all_cars_data if car.get("energytpye") == 1
                     )
 
                     # 始终显示统计信息, 即使在简洁模式下
@@ -1058,13 +1058,13 @@ def process_files(
                     # 优化列顺序设置
                     base_columns = [
                         "batch",
-                        "car_type",
+                        "energytpye",
+                        "vmodel",
                         "category",
                         "sub_type",
                         "序号",
                         "企业名称",
                         "品牌",
-                        "型号",
                         "table_id",
                         "raw_text",
                     ]
@@ -1083,8 +1083,8 @@ def process_files(
                     # 始终显示统计信息, 即使在简洁模式下
                     display_statistics(
                         len(all_cars_df),
-                        len(all_cars_df[all_cars_df["car_type"] == 2]),
-                        len(all_cars_df[all_cars_df["car_type"] == 1]),
+                        len(all_cars_df[all_cars_df["energytpye"] == 2]),
+                        len(all_cars_df[all_cars_df["energytpye"] == 1]),
                         output,
                     )
 
@@ -1106,8 +1106,8 @@ def process_files(
                 if compare:
                     try:
                         old_df = pd.read_csv(compare, encoding="utf-8-sig")
-                        new_models = set(all_cars_df["型号"].unique())
-                        old_models = set(old_df["型号"].unique())
+                        new_models = set(all_cars_df["vmodel"].unique())
+                        old_models = set(old_df["vmodel"].unique())
                         display_comparison(
                             new_models - old_models, old_models - new_models
                         )
@@ -1544,7 +1544,7 @@ class DocProcessor:
         base_info = {
             "category": table_category,
             "sub_type": table_type,
-            "car_type": 2 if table_category == "节能型" else 1,
+            "energytpye": 2 if table_category == "节能型" else 1,
             "batch": batch_number,
             "table_id": table_index + 1,  # 添加表格ID, 从1开始计数
         }
@@ -1716,21 +1716,21 @@ class DocProcessor:
                             self.logger.debug(f"更新编号子节点: {text}")
                         elif "勘误" in text or "说明" in text:
                             self.doc_structure.add_node(
-                                text[:20] + "...",
+                                text[:40] + "...",
                                 "note",
                                 content=text,
                                 parent_node=self.current_section,
                             )
                         elif "更正" in text or "修改" in text:
                             self.doc_structure.add_node(
-                                text[:20] + "...",
+                                text[:40] + "...",
                                 "correction",
                                 content=text,
                                 parent_node=self.current_section,
                             )
                         else:
                             self.doc_structure.add_node(
-                                text[:20] + "...",
+                                text[:40] + "...",
                                 "text",
                                 content=text,
                                 parent_node=self.current_section,
