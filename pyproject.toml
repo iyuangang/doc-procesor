@@ -1,58 +1,51 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "doc_processor"
+name = "doc-procesor"
 version = "0.1.0"
+description = "处理车辆数据文档的工具"
 authors = [
-    {name = "Your Name", email = "your.email@example.com"},
+    {name = "Administrator", email = "admin@example.com"},
 ]
-description = "车辆数据文档处理工具"
 readme = "README.md"
 requires-python = ">=3.8"
-license = "MIT"
 classifiers = [
     "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+
 dependencies = [
     "python-docx>=0.8.11",
-    "click>=8.0.0",
-    "rich>=10.0.0",
-    "pandas>=1.3.0",
-    "lxml>=4.6.3",
+    "rich>=13.3.5",
     "PyYAML>=6.0",
-    "psutil>=5.9.0",
+    "click>=8.1.3",
+    "typing-extensions>=4.7.0",
+    "tqdm>=4.65.0",
+    "mypy-extensions>=1.0.0",
 ]
 
-[project.urls]
-"Homepage" = "https://github.com/yourusername/doc-processor"
-"Bug Tracker" = "https://github.com/yourusername/doc-processor/issues"
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "mypy",
+]
 
 [project.scripts]
-doc-processor = "doc_processor.cli.commands:cli"
+doc-procesor = "src.cli.main:cli"
 
 [tool.setuptools]
-packages = [
-    "doc_processor",
-    "doc_processor.cli",
-    "doc_processor.config",
-    "doc_processor.core",
-    "doc_processor.exceptions",
-    "doc_processor.extractors",
-    "doc_processor.models",
-    "doc_processor.parsers",
-    "doc_processor.utils"
-]
+package-dir = {"" = "."}
 
 [tool.black]
 line-length = 88
-target-version = ["py38"]
 
 [tool.isort]
 profile = "black"
-line_length = 88
 
 [tool.mypy]
 python_version = "3.8"

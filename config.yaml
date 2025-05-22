@@ -1,14 +1,39 @@
-cache_size_limit: 52428800
-chunk_size: 1000
-cleanup_interval: 300
-logging:
-  file: logs/doc_processor.log
-  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-  level: INFO
-max_paragraphs_to_search: 30
-max_processes: 5
-max_tables_to_search: 5
-memory_limit: 1073741824
-preview: false
-skip_count_check: false
-verbose: false
+# 车辆数据文档处理器配置文件
+
+# 文档处理相关配置
+document:
+  # 是否跳过验证
+  skip_verification: false
+  # 支持的文档类型
+  supported_formats:
+    - ".docx"
+
+# 性能相关配置
+performance:
+  # 处理块大小
+  chunk_size: 1000
+  # 并行处理选项
+  parallel: false
+  # 最大线程数
+  max_threads: 4
+
+# 输出相关配置
+output:
+  # 输出格式（支持 csv, json, excel）
+  format: "csv"
+  # 是否输出详细统计
+  detailed_stats: true
+  # 是否生成汇总报告
+  summary_report: true
+
+# 数据验证规则
+validation:
+  # 需要验证的字段
+  required_fields:
+    - "vmodel"
+    - "category"
+    - "batch"
+  # 批次号格式检查正则表达式
+  batch_number_pattern: "^[0-9]+$"
+  # 自动修正类别名称
+  auto_correct_categories: true 

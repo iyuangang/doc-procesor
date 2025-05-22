@@ -1,10 +1,14 @@
 """
-中文数字工具模块，提供中文数字转阿拉伯数字的功能
+中文数字处理模块 - 提供中文数字和阿拉伯数字互相转换的功能
 """
 
 import re
 from functools import lru_cache
-from typing import Dict, Optional
+from typing import Dict, Optional, Pattern
+
+# 预编译正则表达式
+BATCH_NUMBER_PATTERN: Pattern[str] = re.compile(r"第([一二三四五六七八九十百零\d]+)批")
+CHINESE_NUMBER_PATTERN: Pattern[str] = re.compile(r"([一二三四五六七八九十百零]+)")
 
 # 中文数字映射表
 CN_NUMS: Dict[str, str] = {
@@ -22,10 +26,6 @@ CN_NUMS: Dict[str, str] = {
     "百": "100",
 }
 
-# 预编译正则表达式
-BATCH_NUMBER_PATTERN = re.compile(r"第([一二三四五六七八九十百零\d]+)批")
-CHINESE_NUMBER_PATTERN = re.compile(r"([一二三四五六七八九十百零]+)")
-
 
 @lru_cache(maxsize=1024)
 def cn_to_arabic(cn_num: str) -> str:
@@ -36,7 +36,7 @@ def cn_to_arabic(cn_num: str) -> str:
         cn_num: 中文数字字符串
 
     Returns:
-        阿拉伯数字字符串
+        转换后的阿拉伯数字字符串
     """
     if cn_num.isdigit():
         return cn_num
@@ -80,10 +80,10 @@ def extract_batch_number(text: str) -> Optional[str]:
     从文本中提取批次号，使用缓存提高性能
 
     Args:
-        text: 待提取的文本
+        text: 需要提取批次号的文本
 
     Returns:
-        批次号，如果未找到则返回None
+        提取出的批次号，如果未找到则返回None
     """
     # 先尝试匹配完整的批次号格式
     match = BATCH_NUMBER_PATTERN.search(text)

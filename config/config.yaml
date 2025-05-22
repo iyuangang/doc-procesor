@@ -1,0 +1,58 @@
+# 应用程序配置
+
+# 性能设置
+performance:
+  # 数据处理分块大小
+  chunk_size: 1000
+  # 缓存大小限制 (字节)
+  cache_size_limit: 52428800  # 50MB
+  # 缓存清理间隔 (秒)
+  cleanup_interval: 300
+  # 多进程设置
+  multiprocessing:
+    # 是否启用多进程
+    enabled: true
+    # 最大进程数 (0 表示自动确定)
+    max_processes: 0
+  # 内存管理
+  memory:
+    # 内存使用阈值 (百分比) - 超过此值将触发垃圾回收
+    gc_threshold: 80
+
+# 文档处理设置
+document:
+  # 跳过总记录数检查
+  skip_count_check: false
+  # 仅解析文档的前N个段落
+  max_paragraphs_to_search: 30
+  # 仅解析文档的前N个表格
+  max_tables_to_search: 5
+  # 大文件处理 (MB)
+  large_file_threshold: 50
+
+# 输出设置
+output:
+  # 默认输出文件名
+  default_output: "cars_output.csv"
+  # 是否输出详细信息
+  verbose: false
+  # 是否在简洁模式下显示关键信息
+  show_key_info_in_compact_mode: true
+  # 是否显示内存使用情况
+  show_memory_usage: true
+
+# 错误处理
+error_handling:
+  # 重试次数
+  max_retries: 3
+  # 重试间隔 (秒)
+  retry_interval: 5
+  # 是否继续处理其他文件当一个文件失败时
+  continue_on_error: true
+
+# 调试选项
+debug:
+  # 是否启用性能分析
+  enable_profiling: false
+  # 是否输出调试信息
+  verbose_debug: false 

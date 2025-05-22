@@ -1,51 +1,10 @@
 """
-文本处理工具模块
+数据验证模块 - 提供各种数据验证和修复功能
 """
 
-import re
-from functools import lru_cache
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Any, Tuple, Optional
 
-# 预编译正则表达式
-WHITESPACE_PATTERN = re.compile(r"\s+")
-COUNT_PATTERN = re.compile(r"(共计|总计|合计).*?(\d+).*?(款|个|种|辆|台|项)")
-
-
-@lru_cache(maxsize=1024)
-def clean_text(text: str) -> str:
-    """
-    清理文本内容，使用缓存提高性能
-
-    Args:
-        text: 待清理的文本
-
-    Returns:
-        清理后的文本
-    """
-    # 移除多余的空白字符
-    text = WHITESPACE_PATTERN.sub(" ", text.strip())
-    # 统一全角字符到半角
-    text = text.replace("，", ",").replace("；", ";")
-    return text
-
-
-def extract_count_from_text(text: str) -> Optional[int]:
-    """
-    从文本中提取数量信息
-
-    Args:
-        text: 待提取的文本
-
-    Returns:
-        提取的数量，如果未找到则返回None
-    """
-    match = COUNT_PATTERN.search(text)
-    if match:
-        try:
-            return int(match.group(2))
-        except (ValueError, IndexError):
-            pass
-    return None
+from ..utils.text_processing import clean_text
 
 
 def validate_car_info(
@@ -58,7 +17,10 @@ def validate_car_info(
         car_info: 车辆信息字典
 
     Returns:
-        验证结果元组：(是否有效, 错误信息, 修复后的信息)
+        元组，包含:
+        - 验证是否通过 (bool)
+        - 失败原因 (str)
+        - 修复后的车辆信息 (Dict[str, Any] 或 None)
     """
     # 基本验证
     if not car_info or not any(str(value).strip() for value in car_info.values()):
@@ -86,16 +48,16 @@ def validate_car_info(
                 # 处理多个数值的情况（如范围值）
                 if "/" in value:
                     values = [float(v.strip()) for v in value.split("/") if v.strip()]
-                    if values:
-                        fixed_info[field] = min(values)  # 使用最小值
+                    fixed_info[field] = min(values)  # 使用最小值
                 else:
                     try:
-                        fixed_info[field] = float(value.replace("，", ","))
+                        fixed_info[field] = float(value.replace(", ", ","))
                     except ValueError:
+                        # 保留原始值
                         pass
 
     # 3. 确保必要字段存在
-    required_fields = ["car_type", "category", "sub_type"]
+    required_fields = ["energytype", "category", "sub_type"]
     for field in required_fields:
         if field not in fixed_info:
             return False, f"缺少必要字段: {field}", None
@@ -125,15 +87,15 @@ def process_car_info(
     model_values = []
     for field in model_fields:
         if field in car_info:
-            value = car_info.pop(field) if field != "型号" else car_info.get(field)
+            value = car_info.pop(field) if field != "vmodel" else car_info.get(field)
             if value and str(value).strip():
                 model_values.append(clean_text(str(value)))
 
     if model_values:
-        car_info["型号"] = model_values[0]  # 使用第一个非空的型号
+        car_info["vmodel"] = model_values[0]  # 使用第一个非空的型号
 
     # 标准化字段名称
-    field_mapping = {
+    field_mapping: Dict[str, str] = {
         "通用名称": "品牌",
         "商标": "品牌",
         "生产企业": "企业名称",
