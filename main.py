@@ -185,7 +185,7 @@ def validate_car_info(
                         logging.warning(f"无法转换数值: {fields}={value}")
 
     # 3. 确保必要字段存在
-    required_fields = ["energytpye", "category", "sub_type"]
+    required_fields = ["energytype", "category", "sub_type"]
     for fields in required_fields:
         if fields not in fixed_info:
             return False, f"缺少必要字段: {fields}", None
@@ -223,49 +223,8 @@ def get_table_type(
         normalized_headers[idx] = "变速器"
         normalized_headers.pop(idx + 1)
 
-    header_text = " ".join(normalized_headers).lower()
-
     # 只从表头判断category（节能型或新能源）
     category = current_category or "未知"
-
-    # 节能型车辆的特征关键词
-    energy_saving_indicators = [
-        "排量(ml)",
-        "燃料消耗量",
-        "排量",
-        "油耗",
-        "发动机",
-        "cng",
-        "lng",
-        "燃气",
-        "天然气",
-        "燃料种类",
-    ]
-
-    # 新能源车辆的特征关键词
-    new_energy_indicators = [
-        "电池",
-        "电动",
-        "纯电动续驶里程",
-        "动力电池",
-        "电量",
-        "电机",
-        "混合动力",
-        "燃料电池",
-        "充电",
-    ]
-
-    # 检查表头是否包含节能型车辆特征
-    for indicator in energy_saving_indicators:
-        if indicator in header_text:
-            category = "节能型"
-            break
-
-    # 检查表头是否包含新能源车辆特征
-    for indicator in new_energy_indicators:
-        if indicator in header_text:
-            category = "新能源"
-            break
 
     # 如果在明确的节能型部分中，优先使用节能型分类
     if "节能型" in str(current_category).lower():
@@ -991,7 +950,7 @@ def process_files(
 
                         base_columns = [
                             "batch",
-                            "energytpye",
+                            "energytype",
                             "vmodel",
                             "category",
                             "sub_type",
@@ -1038,10 +997,10 @@ def process_files(
 
                     # 计算统计数据
                     energy_saving_count = sum(
-                        1 for car in all_cars_data if car.get("energytpye") == 2
+                        1 for car in all_cars_data if car.get("energytype") == 2
                     )
                     new_energy_count = sum(
-                        1 for car in all_cars_data if car.get("energytpye") == 1
+                        1 for car in all_cars_data if car.get("energytype") == 1
                     )
 
                     # 始终显示统计信息, 即使在简洁模式下
@@ -1058,7 +1017,7 @@ def process_files(
                     # 优化列顺序设置
                     base_columns = [
                         "batch",
-                        "energytpye",
+                        "energytype",
                         "vmodel",
                         "category",
                         "sub_type",
@@ -1083,8 +1042,8 @@ def process_files(
                     # 始终显示统计信息, 即使在简洁模式下
                     display_statistics(
                         len(all_cars_df),
-                        len(all_cars_df[all_cars_df["energytpye"] == 2]),
-                        len(all_cars_df[all_cars_df["energytpye"] == 1]),
+                        len(all_cars_df[all_cars_df["energytype"] == 2]),
+                        len(all_cars_df[all_cars_df["energytype"] == 1]),
                         output,
                     )
 
@@ -1544,7 +1503,7 @@ class DocProcessor:
         base_info = {
             "category": table_category,
             "sub_type": table_type,
-            "energytpye": 2 if table_category == "节能型" else 1,
+            "energytype": 2 if table_category == "节能型" else 1,
             "batch": batch_number,
             "table_id": table_index + 1,  # 添加表格ID, 从1开始计数
         }
