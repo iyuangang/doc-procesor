@@ -5,10 +5,13 @@
 import click
 import logging
 import os
-from typing import Optional, Dict, Any
+import sys
+from typing import Optional, Dict, Any, NoReturn
 
-from ..config.settings import load_config, setup_logging, ConfigurationError
-from ..__main__ import process_directory, process_single_file
+# 修改导入路径，使用相对导入
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+from src.config.settings import load_config, setup_logging, ConfigurationError
+from src.__main__ import process_directory, process_single_file
 
 
 @click.group()
@@ -115,7 +118,7 @@ def process(
         click.echo(f"处理失败: {str(e)}")
 
 
-def main():
+def main() -> NoReturn:
     """命令行入口函数"""
     cli()
 

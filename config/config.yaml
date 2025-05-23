@@ -21,14 +21,16 @@ performance:
 
 # 文档处理设置
 document:
-  # 跳过总记录数检查
+  # 是否跳过批次验证
+  skip_verification: false
+  # 是否跳过记录总数检查
   skip_count_check: false
-  # 仅解析文档的前N个段落
+  # 大文件阈值（MB）
+  large_file_threshold: 100
+  # 段落搜索最大数量
   max_paragraphs_to_search: 30
-  # 仅解析文档的前N个表格
+  # 表格搜索最大数量
   max_tables_to_search: 5
-  # 大文件处理 (MB)
-  large_file_threshold: 50
 
 # 输出设置
 output:
@@ -55,4 +57,10 @@ debug:
   # 是否启用性能分析
   enable_profiling: false
   # 是否输出调试信息
-  verbose_debug: false 
+  verbose_debug: false
+
+logging:
+  # 日志级别
+  level: INFO
+  # 日志文件路径
+  file: logs/app.log 

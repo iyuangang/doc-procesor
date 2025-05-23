@@ -3,11 +3,11 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "doc-procesor"
-version = "0.1.0"
+name = "doc-processor"
+version = "1.0.0"
 description = "处理车辆数据文档的工具"
 authors = [
-    {name = "Administrator", email = "admin@example.com"},
+    {name = "iyuangang", email = "yuangang@me.com"},
 ]
 readme = "README.md"
 requires-python = ">=3.8"
@@ -36,20 +36,27 @@ dev = [
 ]
 
 [project.scripts]
-doc-procesor = "src.cli.main:cli"
+doc-processor = "doc_processor:main"
 
 [tool.setuptools]
 package-dir = {"" = "."}
+py-modules = ["doc_processor"]
 
 [tool.black]
 line-length = 88
+target-version = ['py38']
 
 [tool.isort]
 profile = "black"
+line_length = 88
 
 [tool.mypy]
 python_version = "3.8"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
-disallow_incomplete_defs = true 
+disallow_incomplete_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py" 

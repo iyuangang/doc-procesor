@@ -12,10 +12,25 @@
 
 ## 安装
 
+### 从PyPI安装（适用于最终用户）
+
+```bash
+# 通过pip安装
+pip install doc-processor
+```
+
+安装后可以直接使用命令行工具:
+
+```bash
+doc-processor process 文档路径.docx -o 输出目录
+```
+
+### 从源码安装（适用于开发者）
+
 ```bash
 # 克隆仓库
-git clone https://github.com/iyuangang/doc-procesor.git
-cd doc-procesor
+git clone https://github.com/iyuangang/doc-processor.git
+cd doc-processor
 
 # 安装依赖
 pip install -r requirements.txt
@@ -33,9 +48,13 @@ pip install -e .
 ```bash
 # 处理单个文件
 python doc_processor.py process 文档路径.docx -o 输出目录
+# 或者使用安装后的命令
+doc-processor process 文档路径.docx -o 输出目录
 
 # 处理整个目录下的文件
 python doc_processor.py process 文档目录 -o 输出目录 --pattern "*.docx"
+# 或者使用安装后的命令
+doc-processor process 文档目录 -o 输出目录 --pattern "*.docx"
 ```
 
 或者，您还可以使用以下方式（可能会显示导入警告）:
@@ -76,6 +95,39 @@ performance:
 logging:
   level: INFO
   file: logs/app.log
+```
+
+## 打包与分发
+
+### 构建分发包
+
+```bash
+# 安装构建工具
+pip install build wheel
+
+# 构建包
+python -m build
+
+# 这将在dist/目录下生成两个文件:
+# - doc_processor-1.0.0-py3-none-any.whl (wheel格式)
+# - doc_processor-1.0.0.tar.gz (源码发布格式)
+```
+
+### 安装分发包
+
+```bash
+# 从wheel文件安装
+pip install dist/doc_processor-1.0.0-py3-none-any.whl
+```
+
+### 上传到PyPI (仅维护者)
+
+```bash
+# 安装上传工具
+pip install twine
+
+# 上传到PyPI
+twine upload dist/*
 ```
 
 ## 测试
