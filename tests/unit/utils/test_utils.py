@@ -62,16 +62,18 @@ class TestChineseNumbers:
 class TestTextProcessing:
     """测试文本处理功能"""
 
-    def test_clean_text(self):
+    def test_clean_text(self) -> None:
         """测试文本清理功能"""
         # 测试空白字符处理
         assert clean_text("  测试   文本  ") == "测试 文本"
         assert clean_text("\n测试\t文本\r\n") == "测试 文本"
 
         # 测试标点符号处理 - 根据实际函数行为调整测试预期
-        assert clean_text("测试, 文本") == "测试,文本"  # 逗号后空格被移除
-        assert clean_text("测试，文本") == "测试，文本"  # 中文逗号保持不变
-        assert clean_text("测试; 文本") == "测试; 文本"  # 分号后空格保持不变
+        assert clean_text("测试, 文本") == "测试, 文本"  # 英文逗号后空格保持不变
         assert (
-            clean_text("测试；文本") == "测试;文本"
+            clean_text("测试，文本") == "测试, 文本"
+        )  # 中文逗号转换为英文逗号，跟空格
+        assert clean_text("测试; 文本") == "测试; 文本"  # 英文分号后空格保持不变
+        assert (
+            clean_text("测试；文本") == "测试; 文本"
         )  # 中文分号转为英文分号，且没有空格

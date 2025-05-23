@@ -7,6 +7,8 @@ import logging
 import os
 import re
 import time
+import tempfile
+import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
 
@@ -15,7 +17,7 @@ from docx import Document
 from docx.document import Document as DocxDocument
 import pandas as pd
 
-from ..batch.validator import verify_batch_consistency
+from ..batch.validator import verify_batch_consistency, verify_all_batches
 from ..config.settings import settings
 from ..document.parser import (
     extract_doc_content,
@@ -26,7 +28,12 @@ from ..models.document_node import DocumentNode, DocumentStructure
 from ..table.extractor import TableExtractor
 from ..utils.chinese_numbers import extract_batch_number
 from ..utils.validation import process_car_info
-from ..ui.console import display_consistency_result, display_doc_content
+from ..ui.console import (
+    display_consistency_result,
+    display_doc_content,
+    display_batch_verification,
+    display_statistics,
+)
 
 
 class ProcessingError(Exception):
@@ -418,6 +425,14 @@ class DocProcessor:
             elif self.verbose and is_large_file:
                 self.logger.info("文件较大，跳过显示详细文档结构以提高性能")
 
+            # 显示批次验证结果
+            batch_results = verify_all_batches(self.cars)
+            if (
+                self._get_config("output.show_key_info_in_compact_mode", True)
+                or self.verbose
+            ) and batch_results:
+                display_batch_verification(batch_results)
+
             # 显示批次一致性验证结果（始终显示，即使在简洁模式下）
             if (
                 self._get_config("output.show_key_info_in_compact_mode", True)
@@ -568,6 +583,18 @@ def process_doc(
         # 如果提供了输出文件路径，则保存CSV文件
         if output_file and result:
             processor.save_to_csv(output_file)
+
+            # 显示统计信息
+            if verbose and result:
+                from ..batch.validator import calculate_statistics
+
+                stats = calculate_statistics(result)
+                display_statistics(
+                    stats["total_count"],
+                    stats["energy_saving_count"],
+                    stats["new_energy_count"],
+                    output_file,
+                )
 
         return result
     except Exception as e:

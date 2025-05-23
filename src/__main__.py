@@ -15,11 +15,15 @@ import pandas as pd
 
 from rich.progress import TaskID
 
-from .batch.validator import calculate_statistics
+from .batch.validator import calculate_statistics, verify_all_batches
 from .config.settings import setup_logging, load_config, Settings
 from .models.car_info import BatchInfo, CarInfo
 from .processor.doc_processor import DocProcessor, process_doc
-from .ui.console import display_statistics, create_progress_bar
+from .ui.console import (
+    display_statistics,
+    create_progress_bar,
+    display_batch_verification,
+)
 
 
 def parse_args():
@@ -85,6 +89,16 @@ def process_single_file(
 
         # 保存为CSV
         processor.save_to_csv(output_file)
+
+        # 显示统计信息
+        if verbose and cars:
+            stats = calculate_statistics(cars)
+            display_statistics(
+                stats["total_count"],
+                stats["energy_saving_count"],
+                stats["new_energy_count"],
+                output_file,
+            )
 
         elapsed = time.time() - start_time
         logger.info(
@@ -237,6 +251,15 @@ def process_directory(
                 )
             except Exception as e:
                 logger.error(f"保存合并结果失败: {str(e)}", exc_info=True)
+
+        # 显示批次验证结果
+        if all_cars:
+            batch_results = verify_all_batches(all_cars)
+            if batch_results:
+                logger.info(f"显示批次验证结果: 共 {len(batch_results)} 个批次")
+                display_batch_verification(batch_results)
+            else:
+                logger.warning("未找到有效的批次数据")
 
         # 显示统计信息
         if verbose and all_cars:

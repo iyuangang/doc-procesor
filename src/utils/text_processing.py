@@ -24,5 +24,5 @@ def clean_text(text: str) -> str:
     # 移除多余的空白字符
     text = WHITESPACE_PATTERN.sub(" ", text.strip())
     # 统一全角字符到半角
-    text = text.replace(", ", ",").replace("；", ";")
+    text = text.replace("，", ", ").replace("；", "; ")
     return text
