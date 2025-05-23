@@ -115,3 +115,6 @@ logs/
 *.xlsx
 temp/
 cache/
+
+*.doc
+*.docx

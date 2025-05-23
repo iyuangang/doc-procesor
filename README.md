@@ -14,7 +14,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/yourusername/doc-procesor.git
+git clone https://github.com/iyuangang/doc-procesor.git
 cd doc-procesor
 
 # 安装依赖
@@ -42,7 +42,7 @@ python -m src.cli.main process 文档目录 -o 输出目录 --pattern "*.docx"
 
 ### 命令行选项
 
-```
+```bash
 选项:
   -o, --output TEXT           输出文件路径或目录
   -v, --verbose               显示详细处理信息
@@ -68,6 +68,50 @@ performance:
 logging:
   level: INFO
   file: logs/app.log
+```
+
+## 测试
+
+本项目包含多层次的测试，确保代码质量和功能正确性。
+
+### 运行测试
+
+使用pytest运行所有测试:
+
+```bash
+python -m pytest
+```
+
+运行特定类型的测试:
+
+```bash
+# 运行单元测试
+python -m pytest tests/test_cli/test_main.py
+
+# 运行集成测试
+python -m pytest tests/test_cli/test_integration*.py
+```
+
+### 测试结构
+
+- **单元测试**: 测试各个组件的基本功能
+- **集成测试**: 测试整个系统的交互，包括:
+  - `test_integration.py`: 命令行基本功能测试
+  - `test_integration_processing.py`: 文档处理流程测试
+  - `test_config_integration.py`: 配置和日志系统测试
+
+### 测试覆盖率
+
+生成测试覆盖率报告:
+
+```bash
+python -m pytest --cov=src
+```
+
+查看HTML格式的详细覆盖率报告:
+
+```bash
+python -m pytest --cov=src --cov-report=html
 ```
 
 ## 许可证

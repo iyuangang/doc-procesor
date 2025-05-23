@@ -12,7 +12,7 @@ from ..__main__ import process_directory, process_single_file
 
 
 @click.group()
-def cli():
+def cli() -> None:
     """车辆数据文档处理工具"""
     pass
 
