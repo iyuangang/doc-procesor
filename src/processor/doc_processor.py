@@ -584,6 +584,11 @@ def process_doc(
         if output_file and result:
             processor.save_to_csv(output_file)
 
+            # 显示批次验证结果
+            batch_results = verify_all_batches(result)
+            if batch_results:
+                display_batch_verification(batch_results)
+
             # 显示统计信息
             if verbose and result:
                 from ..batch.validator import calculate_statistics

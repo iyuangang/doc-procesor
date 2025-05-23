@@ -90,6 +90,11 @@ def process_single_file(
         # 保存为CSV
         processor.save_to_csv(output_file)
 
+        # 显示批次验证结果
+        batch_results = verify_all_batches(cars)
+        if batch_results:
+            display_batch_verification(batch_results)
+
         # 显示统计信息
         if verbose and cars:
             stats = calculate_statistics(cars)
@@ -343,6 +348,22 @@ def main():
     else:
         # 处理单个文件
         cars = process_single_file(args.input, output_dir, config, args.verbose)
+
+        # 计算统计信息并显示
+        if cars:
+            stats = calculate_statistics(cars)
+            if not args.verbose:  # 如果非详细模式，也显示统计信息
+                output_file = os.path.join(
+                    output_dir,
+                    os.path.splitext(os.path.basename(args.input))[0] + ".csv",
+                )
+                display_statistics(
+                    stats["total_count"],
+                    stats["energy_saving_count"],
+                    stats["new_energy_count"],
+                    output_file,
+                )
+
         result = {
             "status": "success" if cars else "error",
             "total_files": 1,
