@@ -15,7 +15,11 @@ import pandas as pd
 
 from rich.progress import TaskID
 
-from .batch.validator import calculate_statistics, verify_all_batches
+from .batch.validator import (
+    calculate_statistics,
+    verify_all_batches,
+    verify_batch_consistency,
+)
 from .config.settings import setup_logging, load_config, Settings
 from .models.car_info import BatchInfo, CarInfo
 from .processor.doc_processor import DocProcessor, process_doc
@@ -23,6 +27,7 @@ from .ui.console import (
     display_statistics,
     create_progress_bar,
     display_batch_verification,
+    display_summary_dashboard,
 )
 
 
@@ -41,6 +46,15 @@ def parse_args():
     parser.add_argument("--skip-verification", help="跳过批次验证", action="store_true")
     parser.add_argument(
         "--pattern", help="文件匹配模式 (仅当输入为目录时有效)", default="*.docx"
+    )
+    parser.add_argument(
+        "--classic-display", help="使用传统显示方式而不是仪表盘", action="store_true"
+    )
+    parser.add_argument(
+        "--dashboard-theme",
+        help="仪表盘主题 (default, dark, light)",
+        choices=["default", "dark", "light"],
+        default="default",
     )
 
     return parser.parse_args()
@@ -90,20 +104,36 @@ def process_single_file(
         # 保存为CSV
         processor.save_to_csv(output_file)
 
-        # 显示批次验证结果
+        # 获取批次验证和一致性检查结果
         batch_results = verify_all_batches(cars)
-        if batch_results:
-            display_batch_verification(batch_results)
 
-        # 显示统计信息
-        if verbose and cars:
-            stats = calculate_statistics(cars)
-            display_statistics(
-                stats["total_count"],
-                stats["energy_saving_count"],
-                stats["new_energy_count"],
-                output_file,
+        # 这里我们需要获取一致性检查结果，但我们需要从processor中获取
+        # 因为process_single_file函数不直接进行一致性检查
+        batch_number = next(
+            (car.get("batch") for car in cars if car.get("batch")), None
+        )
+        consistency_result = verify_batch_consistency(cars, batch_number)
+
+        # 使用汇总仪表盘显示
+        config_use_dashboard = config.get("output", {}).get("use_dashboard", True)
+        if config_use_dashboard:
+            display_summary_dashboard(
+                cars, batch_results, consistency_result, output_file
             )
+        else:
+            # 使用原有的单独显示方式
+            if batch_results:
+                display_batch_verification(batch_results)
+
+            # 显示统计信息
+            if verbose and cars:
+                stats = calculate_statistics(cars)
+                display_statistics(
+                    stats["total_count"],
+                    stats["energy_saving_count"],
+                    stats["new_energy_count"],
+                    output_file,
+                )
 
         elapsed = time.time() - start_time
         logger.info(
@@ -260,22 +290,40 @@ def process_directory(
         # 显示批次验证结果
         if all_cars:
             batch_results = verify_all_batches(all_cars)
-            if batch_results:
-                logger.info(f"显示批次验证结果: 共 {len(batch_results)} 个批次")
-                display_batch_verification(batch_results)
-            else:
-                logger.warning("未找到有效的批次数据")
 
-        # 显示统计信息
-        if verbose and all_cars:
-            # 计算统计数据
-            stats = calculate_statistics(all_cars)
-            display_statistics(
-                stats["total_count"],
-                stats["energy_saving_count"],
-                stats["new_energy_count"],
-                combined_output,
+            # 获取一致性检查结果
+            batch_number = next(
+                (car.get("batch") for car in all_cars if car.get("batch")), None
             )
+            consistency_result = verify_batch_consistency(all_cars, batch_number)
+
+            # 使用汇总仪表盘显示
+            config_use_dashboard = (
+                config.get("output", {}).get("use_dashboard", True) if config else True
+            )
+            if config_use_dashboard:
+                combined_output = os.path.join(output_dir, "combined_results.csv")
+                display_summary_dashboard(
+                    all_cars, batch_results, consistency_result, combined_output
+                )
+            else:
+                # 使用原有的单独显示方式
+                if batch_results:
+                    logger.info(f"显示批次验证结果: 共 {len(batch_results)} 个批次")
+                    display_batch_verification(batch_results)
+                else:
+                    logger.warning("未找到有效的批次数据")
+
+                # 显示统计信息
+                if verbose and all_cars:
+                    # 计算统计数据
+                    stats = calculate_statistics(all_cars)
+                    display_statistics(
+                        stats["total_count"],
+                        stats["energy_saving_count"],
+                        stats["new_energy_count"],
+                        combined_output,
+                    )
 
     finally:
         # 关闭进度条
@@ -330,6 +378,11 @@ def main():
     if "document" not in config:
         config["document"] = {}
     config["document"]["skip_verification"] = args.skip_verification
+
+    if "output" not in config:
+        config["output"] = {}
+    config["output"]["use_dashboard"] = not args.classic_display
+    config["output"]["dashboard_theme"] = args.dashboard_theme
 
     start_time = time.time()
 

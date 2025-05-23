@@ -3,6 +3,7 @@
 """
 
 import textwrap
+import time
 from typing import Dict, Any, List, Set, Optional, Tuple
 
 from rich.console import Console
@@ -17,6 +18,9 @@ from rich.progress import (
 )
 from rich.text import Text
 from rich.tree import Tree
+from rich.layout import Layout
+from rich.columns import Columns
+from rich import box
 
 from ..models.document_node import DocumentNode, DocumentStructure
 
@@ -455,3 +459,297 @@ def print_docx_content(doc_path: str) -> None:
                 border_style="red",
             )
         )
+
+
+def generate_ascii_bar_chart(
+    data: Dict[str, int], title: str, width: int = 40
+) -> Panel:
+    """
+    生成ASCII文本形式的柱状图
+
+    Args:
+        data: 数据字典，键为标签，值为数值
+        title: 图表标题
+        width: 图表最大宽度
+
+    Returns:
+        包装在Panel中的图表
+    """
+    # 确定最大值和标签长度
+    max_value = max(data.values()) if data else 0
+    max_label_length = max(len(label) for label in data.keys()) if data else 0
+
+    if max_value == 0:
+        return Panel(
+            f"[yellow]没有数据可显示[/yellow]", title=title, border_style="blue"
+        )
+
+    # 生成柱状图
+    chart_lines = []
+    chart_lines.append(f"[bold cyan]{title}[/bold cyan]")
+    chart_lines.append("")
+
+    for label, value in sorted(data.items(), key=lambda x: x[1], reverse=True):
+        # 计算柱长度
+        bar_length = int((value / max_value) * width)
+        bar = "█" * bar_length
+
+        # 格式化输出
+        percentage = (value / sum(data.values())) * 100
+        chart_lines.append(
+            f"{label.ljust(max_label_length)} │ {bar} {value} ({percentage:.1f}%)"
+        )
+
+    chart_text = "\n".join(chart_lines)
+    return Panel(chart_text, border_style="blue", box=box.ROUNDED)
+
+
+def generate_spark_line(data: List[int], title: str, width: int = 40) -> Panel:
+    """
+    生成简单的spark line图表
+
+    Args:
+        data: 数据点列表
+        title: 图表标题
+        width: 图表宽度
+
+    Returns:
+        包装在Panel中的图表
+    """
+    if not data or all(x == 0 for x in data):
+        return Panel(
+            f"[yellow]没有数据可显示[/yellow]", title=title, border_style="blue"
+        )
+
+    # 缩放数据到0-7的范围（使用Unicode方块字符的8个高度级别）
+    min_val = min(data)
+    max_val = max(data)
+    range_val = max_val - min_val if max_val > min_val else 1
+
+    # 使用Unicode方块字符表示不同高度
+    spark_chars = "▁▂▃▄▅▆▇█"
+
+    # 生成spark line
+    if len(data) > width:
+        # 如果数据点太多，需要采样
+        step = len(data) / width
+        sampled_data = [data[int(i * step)] for i in range(width)]
+    else:
+        # 如果数据点不够，进行填充
+        sampled_data = data + [data[-1]] * (width - len(data)) if data else []
+
+    # 生成spark line字符
+    spark_line = ""
+    for val in sampled_data:
+        if val == min_val:
+            spark_line += spark_chars[0]
+        elif val == max_val:
+            spark_line += spark_chars[-1]
+        else:
+            index = int(((val - min_val) / range_val) * (len(spark_chars) - 1))
+            spark_line += spark_chars[index]
+
+    # 构建图表文本
+    chart_text = f"[bold cyan]{title}[/bold cyan]\n\n"
+    chart_text += f"{spark_line}\n"
+    chart_text += (
+        f"最小值: {min_val}  最大值: {max_val}  平均值: {sum(data)/len(data):.1f}"
+    )
+
+    return Panel(chart_text, border_style="blue", box=box.ROUNDED)
+
+
+def display_summary_dashboard(
+    cars_data: List[Dict[str, Any]],
+    batch_results: Dict[str, Any],
+    consistency_result: Dict[str, Any],
+    output_file: str,
+) -> None:
+    """
+    显示处理结果汇总面板，将各种统计和验证结果整合到一个统一的仪表盘
+
+    Args:
+        cars_data: 车辆数据列表
+        batch_results: 批次验证结果
+        consistency_result: 一致性检查结果
+        output_file: 输出文件路径
+    """
+    from ..batch.validator import calculate_statistics
+
+    # 计算统计信息
+    stats = calculate_statistics(cars_data)
+    total_count = stats["total_count"]
+    energy_saving_count = stats["energy_saving_count"]
+    new_energy_count = stats["new_energy_count"]
+
+    # 创建车辆类型分布图
+    vehicle_type_data = {
+        "节能型汽车": energy_saving_count,
+        "新能源汽车": new_energy_count,
+    }
+    type_chart = generate_ascii_bar_chart(vehicle_type_data, "车辆类型分布")
+
+    # 创建布局
+    layout = Layout(name="dashboard")
+    layout.split(
+        Layout(name="header", size=3),
+        Layout(name="main", ratio=1),
+        Layout(name="footer", size=3),
+    )
+
+    layout["main"].split_row(
+        Layout(name="left", ratio=1),
+        Layout(name="right", ratio=2),  # 给右侧更多空间
+    )
+
+    # 创建标题
+    title_text = Text("📊 车辆数据处理结果汇总", style="bold white on blue")
+    title_text = Text.assemble(
+        title_text, Text(f" | 共处理 {total_count} 条记录", style="bold white")
+    )
+
+    # 创建统计表格
+    stats_table = Table(
+        title="数据统计",
+        title_style="bold cyan",
+        show_header=True,
+        header_style="bold green",
+        border_style="blue",
+        box=box.ROUNDED,
+    )
+
+    # 添加列
+    stats_table.add_column("类型", style="cyan")
+    stats_table.add_column("数量", justify="right", style="green")
+    stats_table.add_column("占比", justify="right", style="yellow")
+
+    # 计算百分比
+    energy_saving_percent = (
+        energy_saving_count / total_count * 100 if total_count > 0 else 0
+    )
+    new_energy_percent = new_energy_count / total_count * 100 if total_count > 0 else 0
+
+    # 添加行
+    stats_table.add_row(
+        "🚗 节能型汽车", f"{energy_saving_count:,}", f"{energy_saving_percent:.1f}%"
+    )
+    stats_table.add_row(
+        "⚡ 新能源汽车", f"{new_energy_count:,}", f"{new_energy_percent:.1f}%"
+    )
+    stats_table.add_row("📝 总记录数", f"{total_count:,}", "100%")
+
+    # 创建批次分布表格
+    batch_count_table = Table(
+        title="批次分布",
+        show_header=True,
+        header_style="bold green",
+        title_style="bold cyan",
+        border_style="blue",
+        box=box.ROUNDED,
+    )
+
+    batch_count_table.add_column("批次", style="cyan")
+    batch_count_table.add_column("数量", justify="right", style="green")
+    batch_count_table.add_column("占比", justify="right", style="yellow")
+
+    # 添加批次数据
+    batch_counts = stats.get("batch_counts", {})
+    sorted_batches = sorted(batch_counts.items())
+
+    # 决定显示多少批次（基于可用空间）
+    display_count = min(20, len(sorted_batches))  # 默认最多显示20个批次
+
+    # 为批次分布图准备数据
+    batch_chart_data = {}
+
+    for batch, count in sorted_batches[:display_count]:
+        percentage = (count / total_count) * 100
+        batch_count_table.add_row(f"第{batch}批", f"{count:,}", f"{percentage:.1f}%")
+
+        # 只取前10个批次用于图表显示
+        if len(batch_chart_data) < 10:
+            batch_chart_data[f"第{batch}批"] = count
+
+    if len(batch_counts) > display_count:
+        remaining_count = sum(count for _, count in sorted_batches[display_count:])
+        remaining_percentage = (remaining_count / total_count) * 100
+        batch_count_table.add_row(
+            f"其他批次 (共{len(batch_counts) - display_count}个)",
+            f"{remaining_count:,}",
+            f"{remaining_percentage:.1f}%",
+        )
+
+        # 如果批次太多，添加"其他"类别到图表
+        if len(sorted_batches) > 10:
+            other_count = sum(count for _, count in sorted_batches[10:])
+            batch_chart_data["其他批次"] = other_count
+
+    # 添加合计行
+    batch_count_table.add_row(
+        "[bold]合计[/bold]", f"[bold]{total_count}[/bold]", f"[bold]100%[/bold]"
+    )
+
+    # 创建批次分布图
+    batch_chart = generate_ascii_bar_chart(batch_chart_data, "批次分布图表")
+
+    # 创建一致性状态面板，同时包含输出信息
+    if consistency_result["status"] in ["match", "internal_match"]:
+        status_style = "green"
+        status_icon = "✅"
+        status_text = "数据一致"
+    elif consistency_result["status"] in ["mismatch", "internal_mismatch"]:
+        status_style = "red"
+        status_icon = "❌"
+        status_text = "数据不一致"
+    else:
+        status_style = "yellow"
+        status_icon = "⚠️"
+        status_text = "未知状态"
+
+    # 合并一致性检查和输出信息到一个面板
+    info_panel = Panel(
+        f"[{status_style}]{status_icon} 一致性检查: {status_text}[/{status_style}]\n"
+        f"批次: 第{consistency_result.get('batch', '未知')}批\n"
+        f"实际记录: {consistency_result.get('actual_count', '未知')}\n"
+        f"期望记录: {consistency_result.get('declared_count', consistency_result.get('processed_count', '未知'))}\n\n"
+        f"[blue]📂 输出文件:[/blue] {output_file}\n"
+        f"[blue]🕒 处理完成时间:[/blue] {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        title="处理信息",
+        border_style="blue",
+        box=box.ROUNDED,
+    )
+
+    # 组装左侧布局
+    left_content = Layout()
+    left_content.split(
+        Layout(stats_table, name="stats", ratio=1),
+        Layout(type_chart, name="chart", ratio=1),
+        Layout(info_panel, name="info", ratio=1),
+    )
+
+    # 组装右侧布局 - 根据批次数量决定布局
+    right_content = Layout()
+    if len(batch_counts) > 5:  # 如果批次数量较多，添加图表
+        right_content.split(
+            Layout(batch_count_table, name="batch_table", ratio=2),
+            Layout(batch_chart, name="batch_chart", ratio=1),
+        )
+        layout["right"].update(right_content)
+    else:
+        # 批次少时直接显示表格
+        layout["right"].update(batch_count_table)
+
+    # 组装布局
+    layout["header"].update(Panel(title_text, border_style="blue", box=box.ROUNDED))
+    layout["left"].update(left_content)
+
+    footer_text = Text(
+        "💡 使用 -v 参数查看更详细的信息 | 🔍 对比过往批次 | 📥 查看更多统计数据",
+        style="bold white on blue",
+    )
+    layout["footer"].update(Panel(footer_text, border_style="blue", box=box.ROUNDED))
+
+    # 显示布局
+    console.print()
+    console.print(layout)
+    console.print()

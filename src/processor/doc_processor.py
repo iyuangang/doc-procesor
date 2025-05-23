@@ -33,6 +33,7 @@ from ..ui.console import (
     display_doc_content,
     display_batch_verification,
     display_statistics,
+    display_summary_dashboard,
 )
 
 
@@ -427,18 +428,27 @@ class DocProcessor:
 
             # 显示批次验证结果
             batch_results = verify_all_batches(self.cars)
-            if (
-                self._get_config("output.show_key_info_in_compact_mode", True)
-                or self.verbose
-            ) and batch_results:
-                display_batch_verification(batch_results)
 
-            # 显示批次一致性验证结果（始终显示，即使在简洁模式下）
-            if (
-                self._get_config("output.show_key_info_in_compact_mode", True)
-                or self.verbose
-            ):
-                display_consistency_result(consistency_result)
+            # 使用汇总仪表盘显示（如果配置允许）
+            use_dashboard = self._get_config("output.use_dashboard", True)
+            if use_dashboard:
+                display_summary_dashboard(
+                    self.cars, batch_results, consistency_result, self.doc_path
+                )
+            else:
+                # 使用原有的单独显示方式
+                if (
+                    self._get_config("output.show_key_info_in_compact_mode", True)
+                    or self.verbose
+                ) and batch_results:
+                    display_batch_verification(batch_results)
+
+                # 显示批次一致性验证结果（始终显示，即使在简洁模式下）
+                if (
+                    self._get_config("output.show_key_info_in_compact_mode", True)
+                    or self.verbose
+                ):
+                    display_consistency_result(consistency_result)
 
             # 处理完成后主动释放资源
             self.table_extractor.clear_cache()
