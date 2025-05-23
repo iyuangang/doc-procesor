@@ -167,7 +167,7 @@ class TestUIIntegration:
             {
                 "name": "no_batch",
                 "consistency": test_data["consistency_results"]["no_batch"],
-                "expected": ["未知状态", "批次: 第未知批"],
+                "expected": ["未知状态", "批次: 共2批"],
             },
         ]
 

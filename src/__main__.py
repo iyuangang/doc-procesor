@@ -31,7 +31,7 @@ from .ui.console import (
 )
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description="车辆信息文档处理器")
 
@@ -114,13 +114,10 @@ def process_single_file(
         )
         consistency_result = verify_batch_consistency(cars, batch_number)
 
-        # 使用汇总仪表盘显示
+        # 注意：不再在这里调用display_summary_dashboard，因为它已经在DocProcessor.process()中被调用
+        # 避免重复显示仪表盘
         config_use_dashboard = config.get("output", {}).get("use_dashboard", True)
-        if config_use_dashboard:
-            display_summary_dashboard(
-                cars, batch_results, consistency_result, output_file
-            )
-        else:
+        if not config_use_dashboard:
             # 使用原有的单独显示方式
             if batch_results:
                 display_batch_verification(batch_results)
@@ -297,6 +294,16 @@ def process_directory(
             )
             consistency_result = verify_batch_consistency(all_cars, batch_number)
 
+            # 添加批次统计信息到一致性检查结果
+            stats = calculate_statistics(all_cars)
+            batch_counts = stats.get("batch_counts", {})
+            batch_count = len(batch_counts)
+
+            if batch_count > 1:
+                # 更新一致性检查结果，添加批次总数信息
+                consistency_result["batch_count"] = batch_count
+                consistency_result["multiple_batches"] = True
+
             # 使用汇总仪表盘显示
             config_use_dashboard = (
                 config.get("output", {}).get("use_dashboard", True) if config else True
@@ -341,7 +348,7 @@ def process_directory(
     }
 
 
-def main():
+def main() -> int:
     """主函数"""
     args = parse_args()
 

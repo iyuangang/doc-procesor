@@ -660,7 +660,7 @@ def display_summary_dashboard(
     display_count = min(20, len(sorted_batches))  # 默认最多显示20个批次
 
     # 为批次分布图准备数据
-    batch_chart_data = {}
+    batch_chart_data: Dict[str, int] = {}
 
     for batch, count in sorted_batches[:display_count]:
         percentage = (count / total_count) * 100
@@ -706,10 +706,26 @@ def display_summary_dashboard(
         status_icon = "⚠️"
         status_text = "未知状态"
 
+    # 确定批次显示信息
+    batch_counts = stats.get("batch_counts", {})
+    batch_count = len(batch_counts)
+
+    # 批次信息显示
+    if consistency_result.get("multiple_batches", False):
+        # 使用一致性结果中的批次数量（如果可用）
+        count = consistency_result.get("batch_count", batch_count)
+        batch_display = f"共{count}批"
+    elif batch_count > 1:
+        # 多批次情况，显示批次总数
+        batch_display = f"共{batch_count}批"
+    else:
+        # 单批次情况，显示批次号
+        batch_display = f"第{consistency_result.get('batch', '未知')}批"
+
     # 合并一致性检查和输出信息到一个面板
     info_panel = Panel(
         f"[{status_style}]{status_icon} 一致性检查: {status_text}[/{status_style}]\n"
-        f"批次: 第{consistency_result.get('batch', '未知')}批\n"
+        f"批次: {batch_display}\n"
         f"实际记录: {consistency_result.get('actual_count', '未知')}\n"
         f"期望记录: {consistency_result.get('declared_count', consistency_result.get('processed_count', '未知'))}\n\n"
         f"[blue]📂 输出文件:[/blue] {output_file}\n"
