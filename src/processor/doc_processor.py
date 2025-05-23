@@ -544,13 +544,17 @@ class DocProcessor:
 
 
 def process_doc(
-    doc_path: str, verbose: bool = False, config: Optional[Dict[str, Any]] = None
+    doc_path: str,
+    output_file: Optional[str] = None,
+    verbose: bool = False,
+    config: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     处理单个文档的函数
 
     Args:
         doc_path: 文档路径
+        output_file: 输出文件路径，如果提供则保存CSV文件
         verbose: 是否显示详细信息
         config: 配置信息
 
@@ -560,6 +564,11 @@ def process_doc(
     try:
         processor = DocProcessor(doc_path, verbose, config)
         result = processor.process()
+
+        # 如果提供了输出文件路径，则保存CSV文件
+        if output_file and result:
+            processor.save_to_csv(output_file)
+
         return result
     except Exception as e:
         logging.error(f"处理文档 {doc_path} 失败: {str(e)}")

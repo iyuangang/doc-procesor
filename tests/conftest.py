@@ -1,25 +1,99 @@
+# -*- coding: utf-8 -*-
+"""
+pytest配置文件
+"""
+
 import os
+import sys
+import pytest
 import tempfile
 from typing import Generator, Any
 
-import pytest
-from click.testing import CliRunner
+import click.testing
+
+# 将项目根目录添加到导入路径
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+
+@pytest.fixture(scope="session")
+def test_data_dir():
+    """返回测试数据目录路径"""
+    return os.path.join(project_root, "tests", "data")
+
+
+@pytest.fixture(scope="session")
+def sample_docx_path():
+    """返回样本docx文件路径"""
+    data_dir = os.path.join(project_root, "tests", "data")
+    return os.path.join(data_dir, "sample.docx")
+
+
+@pytest.fixture(scope="session")
+def sample_car_dict():
+    """返回样本车辆信息字典"""
+    return {
+        "vmodel": "测试型号",
+        "企业名称": "测试企业",
+        "品牌": "测试品牌",
+        "批次": "1",
+        "energytype": 1,
+        "category": "新能源",
+        "sub_type": "轿车",
+    }
+
+
+@pytest.fixture(scope="session")
+def sample_car_list():
+    """返回样本车辆信息列表"""
+    return [
+        {
+            "vmodel": "型号A",
+            "企业名称": "企业X",
+            "品牌": "品牌M",
+            "批次": "1",
+            "energytype": 1,
+            "category": "新能源",
+            "sub_type": "轿车",
+        },
+        {
+            "vmodel": "型号B",
+            "企业名称": "企业Y",
+            "品牌": "品牌N",
+            "批次": "1",
+            "energytype": 2,
+            "category": "节能型",
+            "sub_type": "SUV",
+        },
+        {
+            "vmodel": "型号C",
+            "企业名称": "企业Z",
+            "品牌": "品牌O",
+            "批次": "2",
+            "energytype": 1,
+            "category": "新能源",
+            "sub_type": "轿车",
+        },
+    ]
+
+
+@pytest.fixture(scope="function")
+def temp_dir(tmpdir):
+    """创建临时目录"""
+    return tmpdir.strpath
+
+
+@pytest.fixture(scope="function")
+def mock_empty_config():
+    """返回空配置"""
+    return {}
 
 
 @pytest.fixture
-def runner() -> CliRunner:
+def runner() -> click.testing.CliRunner:
     """提供Click命令测试运行器"""
-    return CliRunner()
-
-
-@pytest.fixture
-def temp_dir() -> Generator[str, None, None]:
-    """提供临时目录"""
-    with tempfile.TemporaryDirectory() as tmpdirname:
-        old_dir = os.getcwd()
-        os.chdir(tmpdirname)
-        yield tmpdirname
-        os.chdir(old_dir)
+    return click.testing.CliRunner()
 
 
 @pytest.fixture
