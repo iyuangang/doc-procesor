@@ -28,15 +28,23 @@ pip install -e .
 
 ### 命令行使用
 
-处理单个文件:
+推荐使用方式（无警告信息）:
 
 ```bash
-python -m src.cli.main process 文档路径.docx -o 输出目录
+# 处理单个文件
+python doc_processor.py process 文档路径.docx -o 输出目录
+
+# 处理整个目录下的文件
+python doc_processor.py process 文档目录 -o 输出目录 --pattern "*.docx"
 ```
 
-处理整个目录下的文件:
+或者，您还可以使用以下方式（可能会显示导入警告）:
 
 ```bash
+# 处理单个文件
+python -m src.cli.main process 文档路径.docx -o 输出目录
+
+# 处理整个目录下的文件
 python -m src.cli.main process 文档目录 -o 输出目录 --pattern "*.docx"
 ```
 
@@ -44,14 +52,14 @@ python -m src.cli.main process 文档目录 -o 输出目录 --pattern "*.docx"
 
 ```bash
 选项:
-  -o, --output TEXT           输出文件路径或目录
-  -v, --verbose               显示详细处理信息
-  --pattern TEXT              文件匹配模式（用于目录输入）
-  --config PATH               配置文件路径
-  --log-config PATH           日志配置文件路径
-  --chunk-size INTEGER        数据处理块大小
-  --skip-verification         跳过批次验证
-  --help                      显示帮助信息
+  -o, --output PATH     输出文件路径或目录
+  -v, --verbose         显示详细处理信息
+  --pattern TEXT        文件匹配模式（用于目录输入）
+  --config FILE         配置文件路径
+  --log-config FILE     日志配置文件路径
+  --chunk-size INTEGER  数据处理块大小
+  --skip-verification   跳过批次验证
+  --help                显示帮助信息
 ```
 
 ## 配置

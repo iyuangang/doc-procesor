@@ -115,5 +115,10 @@ def process(
         click.echo(f"处理失败: {str(e)}")
 
 
-if __name__ == "__main__":
+def main():
+    """命令行入口函数"""
     cli()
+
+
+if __name__ == "__main__":
+    main()

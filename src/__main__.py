@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
+import pandas as pd
 
 from rich.progress import TaskID
 
@@ -126,7 +127,16 @@ def process_directory(
 
     if not file_paths:
         logger.error(f"未找到匹配的文件: {file_pattern}")
-        return {"status": "error", "message": f"未找到匹配的文件: {file_pattern}"}
+        # 返回完整的结果字典，即使发生错误
+        return {
+            "status": "error",
+            "message": f"未找到匹配的文件: {file_pattern}",
+            "total_files": 0,
+            "processed_files": 0,
+            "success_files": 0,
+            "error_files": 0,
+            "total_records": 0,
+        }
 
     logger.info(f"找到 {len(file_paths)} 个文件")
 
@@ -216,10 +226,12 @@ def process_directory(
         if all_cars:
             combined_output = os.path.join(output_dir, "combined_results.csv")
             try:
-                # 创建临时处理器对象
-                temp_processor = DocProcessor("", verbose=False, config=config or {})
-                temp_processor.cars = all_cars
-                temp_processor.save_to_csv(combined_output)
+                # 直接使用pandas保存合并结果，避免创建空路径DocProcessor
+                df = pd.DataFrame(all_cars)
+                # 确保输出目录存在
+                os.makedirs(os.path.dirname(combined_output), exist_ok=True)
+                # 保存为CSV
+                df.to_csv(combined_output, index=False, encoding="utf-8")
                 logger.info(
                     f"合并结果已保存到: {combined_output}, 总记录数: {len(all_cars)}"
                 )
@@ -326,5 +338,6 @@ def main():
     return 0
 
 
+# 当直接运行此脚本时执行
 if __name__ == "__main__":
     sys.exit(main())
