@@ -7,7 +7,7 @@ import os
 import sys
 import pytest
 import tempfile
-from typing import Generator, Any
+from typing import Generator, Any, Dict, List
 
 import click.testing
 
@@ -18,20 +18,20 @@ if project_root not in sys.path:
 
 
 @pytest.fixture(scope="session")
-def test_data_dir():
+def test_data_dir() -> str:
     """返回测试数据目录路径"""
     return os.path.join(project_root, "tests", "data")
 
 
 @pytest.fixture(scope="session")
-def sample_docx_path():
+def sample_docx_path() -> str:
     """返回样本docx文件路径"""
     data_dir = os.path.join(project_root, "tests", "data")
     return os.path.join(data_dir, "sample.docx")
 
 
 @pytest.fixture(scope="session")
-def sample_car_dict():
+def sample_car_dict() -> Dict[str, object]:
     """返回样本车辆信息字典"""
     return {
         "vmodel": "测试型号",
@@ -45,7 +45,7 @@ def sample_car_dict():
 
 
 @pytest.fixture(scope="session")
-def sample_car_list():
+def sample_car_list() -> List[Dict[str, object]]:
     """返回样本车辆信息列表"""
     return [
         {
@@ -85,7 +85,7 @@ def temp_dir(tmpdir):
 
 
 @pytest.fixture(scope="function")
-def mock_empty_config():
+def mock_empty_config() -> {}:
     """返回空配置"""
     return {}
 

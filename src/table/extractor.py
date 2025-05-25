@@ -40,20 +40,52 @@ class TableExtractor:
             header_processed = False
             last_company = ""
             last_brand = ""
+            expected_columns = 0
 
             # 尝试使用lxml的xpath直接提取文本
-            for row in table._tbl.xpath(".//w:tr"):
+            for row_idx, row in enumerate(table._tbl.xpath(".//w:tr")):
                 cells = []
                 for cell in row.xpath(".//w:tc"):
                     # 直接获取所有文本节点
                     text = "".join(t.text for t in cell.xpath(".//w:t"))
                     cells.append(text.strip())
 
+                # 检查是否是表头行
                 if not header_processed:
                     processed_headers = self._process_merged_headers(cells)
+                    expected_columns = len(processed_headers)
                     rows.append(processed_headers)
                     header_processed = True
                     continue
+
+                # 处理数据行
+                if len(cells) != expected_columns:
+                    # 如果列数不匹配，尝试自动修复
+                    if len(cells) > expected_columns:
+                        # 检查是否有空列可以合并
+                        merged_cells = []
+                        extra_content = []
+                        i = 0
+                        while i < len(cells):
+                            if i < expected_columns - 1:
+                                merged_cells.append(cells[i])
+                            else:
+                                extra_content.append(cells[i])
+                            i += 1
+
+                        # 将多余的内容合并到最后一列
+                        if extra_content and expected_columns > 0:
+                            if len(merged_cells) < expected_columns:
+                                merged_cells.append(" ".join(extra_content))
+                            else:
+                                merged_cells[expected_columns - 1] += " " + " ".join(
+                                    extra_content
+                                )
+
+                        cells = merged_cells
+                    else:
+                        # 如果列数不足，添加空值
+                        cells.extend([""] * (expected_columns - len(cells)))
 
                 processed_row = self._process_data_row(cells, last_company, last_brand)
                 if processed_row:
@@ -70,7 +102,7 @@ class TableExtractor:
 
     def _process_merged_headers(self, headers: List[str]) -> List[str]:
         """
-        处理合并的表头，例如将'型式'和'档位数'合并为'变速器'
+        处理合并的表头，识别并合并相关列
 
         Args:
             headers: 原始表头列表
@@ -80,17 +112,44 @@ class TableExtractor:
         """
         processed = []
         i = 0
+
+        # 标准化表头，移除空格并转为小写
+        normalized_headers = [h.strip().lower() for h in headers]
+
         while i < len(headers):
+            # 处理变速器相关列
             if (
                 i + 1 < len(headers)
-                and headers[i] == "型式"
-                and headers[i + 1] == "档位数"
+                and normalized_headers[i] == "型式"
+                and normalized_headers[i + 1] == "档位数"
             ):
                 processed.append("变速器")
                 i += 2
+            # 处理发动机相关列
+            elif (
+                i + 1 < len(headers)
+                and normalized_headers[i].startswith("发动")
+                and normalized_headers[i + 1].startswith("排量")
+            ):
+                processed.append("发动机")
+                i += 2
+            # 处理其他可能的合并列
+            elif (
+                i + 1 < len(headers)
+                and normalized_headers[i] == "企业"
+                and normalized_headers[i + 1] == "名称"
+            ):
+                processed.append("企业名称")
+                i += 2
+            # 处理注释或备注列
+            elif any(kw in normalized_headers[i] for kw in ["注", "备注", "说明"]):
+                processed.append("备注")
+                i += 1
+            # 处理其他列
             else:
                 processed.append(headers[i])
                 i += 1
+
         return processed
 
     def _process_data_row(
@@ -176,6 +235,7 @@ class TableExtractor:
         }
 
         total_rows = len(all_rows) - 1
+        processed_rows = 0
 
         # 分块处理数据行
         for chunk_start in range(1, len(all_rows), self._chunk_size):
@@ -188,18 +248,15 @@ class TableExtractor:
                 if not any(str(cell).strip() for cell in cells):
                     continue
 
-                # 记录列数不匹配的情况，但仍然处理数据
-                if len(cells) != len(headers):
-                    self.logger.warning(
-                        f"表格 {table_index + 1} 第 {row_idx} 行列数不匹配: "
-                        f"预期 {len(headers)} 列，实际 {len(cells)} 列"
-                    )
+                processed_rows += 1
 
-                    # 调整单元格数量以匹配表头
-                    if len(cells) > len(headers):
-                        cells = cells[: len(headers)]
-                    else:
-                        cells.extend([""] * (len(headers) - len(cells)))
+                # 列数已经在extract_table_cells_fast中调整过，这里不需要再次调整
+                # 但仍然记录一下原始列数，用于调试
+                if len(cells) != len(headers):
+                    self.logger.debug(
+                        f"表格 {table_index + 1} 第 {row_idx} 行列数已调整: "
+                        f"原始 {len(cells)} 列，调整为 {len(headers)} 列"
+                    )
 
                 # 创建新的字典，避免引用同一个对象
                 car_info = base_info.copy()
@@ -213,8 +270,7 @@ class TableExtractor:
                     }
                 )
 
-                # 处理车辆信息 (这里我们应该调用外部的process_car_info函数)
-                # 从..utils.validation导入process_car_info
+                # 处理车辆信息
                 from ..utils.validation import process_car_info
 
                 car_info = process_car_info(car_info, batch_number)

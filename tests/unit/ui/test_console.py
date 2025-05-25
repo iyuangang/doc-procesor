@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 import time
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Generator
 
 import pandas as pd
 from rich.console import Console
@@ -32,7 +32,7 @@ class TestAsciiCharts:
     """测试ASCII图表生成功能"""
 
     @pytest.fixture
-    def mock_console_output(self):
+    def mock_console_output(self) -> Generator[io.StringIO, None, None]:
         """模拟控制台输出的fixture"""
         string_io = io.StringIO()
         console = Console(file=string_io, width=100, height=30)
@@ -40,7 +40,7 @@ class TestAsciiCharts:
         with patch("src.ui.console.console", console):
             yield string_io
 
-    def test_generate_ascii_bar_chart(self, mock_console_output):
+    def test_generate_ascii_bar_chart(self, mock_console_output) -> None:
         """测试柱状图生成"""
         # 准备测试数据
         data = {"A": 10, "B": 5, "C": 1}
@@ -61,7 +61,7 @@ class TestAsciiCharts:
         # 验证柱长度关系：A应该有更多的方块字符
         assert output.count("█") > 0
 
-    def test_generate_ascii_bar_chart_empty_data(self, mock_console_output):
+    def test_generate_ascii_bar_chart_empty_data(self, mock_console_output) -> None:
         """测试空数据情况"""
         panel = generate_ascii_bar_chart({}, "空图表")
         Console(file=mock_console_output).print(panel)
