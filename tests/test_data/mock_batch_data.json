@@ -1,0 +1,95 @@
+{
+  "cars": [
+    {
+      "vmodel": "车型1",
+      "energytype": 2,
+      "category": "节能型",
+      "batch": "1",
+      "table_id": 1,
+      "企业名称": "测试企业A",
+      "品牌": "测试品牌"
+    },
+    {
+      "vmodel": "车型2",
+      "energytype": 2,
+      "category": "节能型",
+      "batch": "1",
+      "table_id": 1,
+      "企业名称": "测试企业A",
+      "品牌": "测试品牌"
+    },
+    {
+      "vmodel": "车型3",
+      "energytype": 1,
+      "category": "新能源",
+      "batch": "1",
+      "table_id": 2,
+      "企业名称": "测试企业B",
+      "品牌": "测试品牌"
+    },
+    {
+      "vmodel": "车型4",
+      "energytype": 1,
+      "category": "新能源",
+      "batch": "2",
+      "table_id": 3,
+      "企业名称": "测试企业C",
+      "品牌": "测试品牌"
+    },
+    {
+      "vmodel": "车型5",
+      "energytype": 1,
+      "category": "新能源",
+      "batch": "2",
+      "table_id": 3,
+      "企业名称": "测试企业C",
+      "品牌": "测试品牌"
+    }
+  ],
+  "batch_results": {
+    "1": {
+      "total": 3,
+      "table_counts": {
+        "1": 2,
+        "2": 1
+      }
+    },
+    "2": {
+      "total": 2,
+      "table_counts": {
+        "3": 2
+      }
+    }
+  },
+  "consistency_results": {
+    "match": {
+      "status": "match",
+      "message": "批次记录数匹配：声明 5, 实际 5",
+      "batch": "1",
+      "actual_count": 5,
+      "declared_count": 5,
+      "table_counts": {
+        "1": 2,
+        "2": 1,
+        "3": 2
+      }
+    },
+    "mismatch": {
+      "status": "mismatch",
+      "message": "批次记录数不匹配：声明 10, 实际 5",
+      "batch": "1",
+      "actual_count": 5,
+      "declared_count": 10,
+      "difference": 5,
+      "table_counts": {
+        "1": 2,
+        "2": 1,
+        "3": 2
+      }
+    },
+    "no_batch": {
+      "status": "no_batch",
+      "message": "未找到批次号"
+    }
+  }
+} 

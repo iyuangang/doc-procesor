@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install project and development tools
+        run: python -m pip install -e ".[dev]"
+      - name: Check formatting
+        run: python -m black --check src tests doc_processor.py run_tests.py
+      - name: Check types
+        run: python -m mypy src doc_processor.py run_tests.py
+      - name: Run tests
+        run: python -m pytest

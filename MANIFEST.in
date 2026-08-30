@@ -1,0 +1,9 @@
+include LICENSE
+include README.md
+include requirements.txt
+include pytest.ini
+
+recursive-include config *.yaml *.json *.ini
+recursive-include docs *.md *.rst *.txt
+recursive-include sample_docs *.docx
+recursive-include tests *.py *.docx *.json *.yaml 
