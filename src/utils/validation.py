@@ -37,7 +37,13 @@ def validate_car_info(
 
     # 1. 处理变速器信息
     if "型式" in fixed_info and "档位数" in fixed_info:
-        fixed_info["变速器"] = f"{fixed_info.pop('型式')} {fixed_info.pop('档位数')}"
+        transmission = " ".join(
+            str(value).strip()
+            for value in (fixed_info.pop("型式"), fixed_info.pop("档位数"))
+            if str(value).strip()
+        )
+        if transmission:
+            fixed_info["变速器"] = transmission
 
     # 2. 标准化数值字段
     numeric_fields = ["排量(ml)", "整车整备质量(kg)", "综合燃料消耗量（L/100km）"]
@@ -47,8 +53,14 @@ def validate_car_info(
             if isinstance(value, str):
                 # 处理多个数值的情况（如范围值）
                 if "/" in value:
-                    values = [float(v.strip()) for v in value.split("/") if v.strip()]
-                    fixed_info[field] = min(values)  # 使用最小值
+                    try:
+                        values = [
+                            float(v.strip()) for v in value.split("/") if v.strip()
+                        ]
+                        if values:
+                            fixed_info[field] = min(values)
+                    except ValueError:
+                        pass
                 else:
                     try:
                         fixed_info[field] = float(value.replace(", ", ","))
@@ -57,10 +69,18 @@ def validate_car_info(
                         pass
 
     # 3. 确保必要字段存在
-    required_fields = ["energytype", "category", "sub_type"]
+    fixed_info["sub_type"] = fixed_info.get("sub_type") or "未知"
+    required_fields = ["vmodel", "energytype", "category"]
     for field in required_fields:
-        if field not in fixed_info:
+        if field not in fixed_info or fixed_info[field] in (None, ""):
             return False, f"缺少必要字段: {field}", None
+
+    if fixed_info["category"] not in {"节能型", "新能源"}:
+        return False, f"未知车辆类别: {fixed_info['category']}", None
+
+    expected_energy_type = {"新能源": 1, "节能型": 2}[fixed_info["category"]]
+    if fixed_info["energytype"] != expected_energy_type:
+        return False, "车辆类别与能源类型不一致", None
 
     return True, "", fixed_info
 

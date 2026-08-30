@@ -89,12 +89,28 @@ def test_verify_batch_consistency_internal_match(sample_cars):
     b001_cars = [car for car in sample_cars if car["batch"] == "B001"]
 
     # 验证内部一致性（不提供声明数量）
-    result = verify_batch_consistency(b001_cars, "B001")
+    result = verify_batch_consistency(b001_cars, "B001", candidate_count=2)
 
     assert result["status"] == "internal_match"
     assert result["actual_count"] == 2
     assert result["processed_count"] == 2
     assert result["batch"] == "B001"
+
+
+def test_verify_batch_consistency_without_independent_count_is_unknown(sample_cars):
+    b001_cars = [car for car in sample_cars if car["batch"] == "B001"]
+    result = verify_batch_consistency(b001_cars, "B001")
+    assert result["status"] == "unknown"
+
+
+def test_verify_batch_consistency_detects_invalid_candidates(sample_cars):
+    b001_cars = [car for car in sample_cars if car["batch"] == "B001"]
+    result = verify_batch_consistency(
+        b001_cars, "B001", candidate_count=3, invalid_count=1
+    )
+    assert result["status"] == "internal_mismatch"
+    assert result["difference"] == 1
+    assert result["invalid_count"] == 1
 
 
 def test_verify_batch_consistency_no_batch(sample_cars):

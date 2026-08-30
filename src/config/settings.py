@@ -5,8 +5,8 @@
 import os
 import logging
 import logging.config
-from datetime import datetime
-from typing import Dict, Any, Union
+from copy import deepcopy
+from typing import Dict, Any, Mapping, Union
 
 import yaml
 
@@ -17,7 +17,7 @@ class ConfigurationError(Exception):
     pass
 
 
-def load_config(config_path: str = "config/config.yaml") -> Dict[Any, Any]:
+def load_config(config_path: str = "config.yaml") -> Dict[Any, Any]:
     """
     加载配置文件
 
@@ -33,9 +33,15 @@ def load_config(config_path: str = "config/config.yaml") -> Dict[Any, Any]:
     try:
         if os.path.exists(config_path):
             with open(config_path, "r", encoding="utf-8") as f:
-                config: Dict[Any, Any] = yaml.safe_load(f)
-            return config
+                loaded = yaml.safe_load(f)
+            if loaded is None:
+                return {}
+            if not isinstance(loaded, dict):
+                raise ConfigurationError("配置文件顶层必须是对象/映射")
+            return loaded
         return {}
+    except ConfigurationError:
+        raise
     except Exception as e:
         raise ConfigurationError(f"加载配置文件出错: {str(e)}")
 
@@ -97,20 +103,10 @@ def setup_default_logging(level: Any) -> None:
     Args:
         level: 日志级别
     """
-    log_dir = "logs"
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(log_dir, f"doc_processor_{timestamp}.log")
-
     logging.basicConfig(
         level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.FileHandler(log_file, encoding="utf-8"),
-            logging.StreamHandler(),
-        ],
+        handlers=[logging.StreamHandler()],
     )
 
     logging.info("使用默认配置设置日志")
@@ -121,15 +117,22 @@ class Settings:
     应用程序设置类，用于管理全局配置
     """
 
-    def __init__(self, config_path: str = "config/config.yaml") -> None:
+    def __init__(
+        self,
+        config_path: Union[str, Mapping[str, Any]] = "config.yaml",
+    ) -> None:
         """
         初始化设置
 
         Args:
             config_path: 配置文件路径
         """
-        self.config_path = config_path
-        self.config = load_config(config_path)
+        if isinstance(config_path, Mapping):
+            self.config_path: Union[str, None] = None
+            self.config = deepcopy(dict(config_path))
+        else:
+            self.config_path = config_path
+            self.config = load_config(config_path)
 
     def get(self, key: str, default: Any = None) -> Any:
         """
@@ -181,6 +184,8 @@ class Settings:
             ConfigurationError: 保存配置出错
         """
         try:
+            if self.config_path is None:
+                raise ConfigurationError("内存配置未指定保存路径")
             config_dir = os.path.dirname(self.config_path)
             if config_dir and not os.path.exists(config_dir):
                 os.makedirs(config_dir)

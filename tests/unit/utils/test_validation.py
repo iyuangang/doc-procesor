@@ -95,6 +95,19 @@ class TestValidation:
         assert "缺少必要字段" in reason
         assert fixed is None
 
+    def test_validate_car_info_rejects_unknown_category(self) -> None:
+        valid, reason, fixed = validate_car_info(
+            {
+                "vmodel": "型号A",
+                "category": "未知",
+                "sub_type": "未知",
+                "energytype": None,
+            }
+        )
+        assert valid is False
+        assert "energytype" in reason or "未知车辆类别" in reason
+        assert fixed is None
+
     def test_process_car_info_batch(self) -> None:
         """测试处理批次号"""
         # 测试添加批次号

@@ -2,13 +2,13 @@
 表格提取器模块 - 从文档表格中提取数据
 """
 
-import gc
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Iterable, Iterator, List, Optional
 
 from docx.table import Table
 
 from ..utils.text_processing import clean_text
+from ..utils.validation import process_car_info, validate_car_info
 
 
 class TableExtractor:
@@ -24,6 +24,7 @@ class TableExtractor:
         self.logger = logging.getLogger(__name__)
         self._chunk_size = chunk_size
         self._table_cache: Dict[int, List[Dict[str, Any]]] = {}
+        self._table_metrics: Dict[int, Dict[str, int]] = {}
 
     def extract_table_cells_fast(self, table: Table) -> List[List[str]]:
         """
@@ -35,70 +36,78 @@ class TableExtractor:
         Returns:
             包含表格单元格内容的二维列表
         """
+        return list(self.iter_table_rows(table))
+
+    def iter_table_rows(self, table: Table) -> Iterator[List[str]]:
+        """Yield normalized table rows without materializing the whole matrix."""
         try:
-            rows = []
-            header_processed = False
-            last_company = ""
-            last_brand = ""
-            expected_columns = 0
 
-            # 尝试使用lxml的xpath直接提取文本
-            for row_idx, row in enumerate(table._tbl.xpath(".//w:tr")):
-                cells = []
-                for cell in row.xpath(".//w:tc"):
-                    # 直接获取所有文本节点
-                    text = "".join(t.text for t in cell.xpath(".//w:t"))
-                    cells.append(text.strip())
+            def raw_rows() -> Iterator[List[str]]:
+                for row in table._tbl.xpath(".//w:tr"):
+                    cells = []
+                    for cell in row.xpath(".//w:tc"):
+                        text = "".join(t.text for t in cell.xpath(".//w:t"))
+                        cells.append(text.strip())
+                    yield cells
 
-                # 检查是否是表头行
-                if not header_processed:
-                    processed_headers = self._process_merged_headers(cells)
-                    expected_columns = len(processed_headers)
-                    rows.append(processed_headers)
-                    header_processed = True
-                    continue
-
-                # 处理数据行
-                if len(cells) != expected_columns:
-                    # 如果列数不匹配，尝试自动修复
-                    if len(cells) > expected_columns:
-                        # 检查是否有空列可以合并
-                        merged_cells = []
-                        extra_content = []
-                        i = 0
-                        while i < len(cells):
-                            if i < expected_columns - 1:
-                                merged_cells.append(cells[i])
-                            else:
-                                extra_content.append(cells[i])
-                            i += 1
-
-                        # 将多余的内容合并到最后一列
-                        if extra_content and expected_columns > 0:
-                            if len(merged_cells) < expected_columns:
-                                merged_cells.append(" ".join(extra_content))
-                            else:
-                                merged_cells[expected_columns - 1] += " " + " ".join(
-                                    extra_content
-                                )
-
-                        cells = merged_cells
-                    else:
-                        # 如果列数不足，添加空值
-                        cells.extend([""] * (expected_columns - len(cells)))
-
-                processed_row = self._process_data_row(cells, last_company, last_brand)
-                if processed_row:
-                    if processed_row[1]:
-                        last_company = processed_row[1]
-                    if processed_row[2]:
-                        last_brand = processed_row[2]
-                    rows.append(processed_row)
-
-            return rows
+            yield from self._normalize_rows(raw_rows())
         except Exception as e:
             self.logger.error(f"表格提取错误: {str(e)}")
-            return []
+            raise RuntimeError(f"无法读取表格内容: {e}") from e
+
+    def _normalize_rows(self, raw_rows: Iterable[List[str]]) -> Iterator[List[str]]:
+        header_processed = False
+        last_company = ""
+        last_brand = ""
+        expected_columns = 0
+        company_index: Optional[int] = None
+        brand_index: Optional[int] = None
+
+        for cells in raw_rows:
+            if not header_processed:
+                expected_columns = len(cells)
+                normalized = [clean_text(value) for value in cells]
+                company_index = next(
+                    (
+                        index
+                        for index, value in enumerate(normalized)
+                        if value in {"企业名称", "生产企业", "企业"}
+                    ),
+                    None,
+                )
+                brand_index = next(
+                    (
+                        index
+                        for index, value in enumerate(normalized)
+                        if value in {"品牌", "商标", "通用名称"}
+                    ),
+                    None,
+                )
+                header_processed = True
+                yield cells
+                continue
+
+            if len(cells) > expected_columns and expected_columns > 0:
+                cells = cells[: expected_columns - 1] + [
+                    " ".join(cells[expected_columns - 1 :])
+                ]
+            elif len(cells) < expected_columns:
+                cells.extend([""] * (expected_columns - len(cells)))
+
+            processed_row = self._process_data_row(
+                cells,
+                last_company,
+                last_brand,
+                company_index=company_index,
+                brand_index=brand_index,
+            )
+            if processed_row is None:
+                continue
+            if company_index is not None and processed_row[company_index]:
+                last_company = processed_row[company_index]
+            if brand_index is not None and processed_row[brand_index]:
+                last_brand = processed_row[brand_index]
+            yield processed_row
 
     def _process_merged_headers(self, headers: List[str]) -> List[str]:
         """
@@ -153,7 +162,12 @@ class TableExtractor:
         return processed
 
     def _process_data_row(
-        self, row: List[str], last_company: str, last_brand: str
+        self,
+        row: List[str],
+        last_company: str,
+        last_brand: str,
+        company_index: Optional[int] = 1,
+        brand_index: Optional[int] = 2,
     ) -> Optional[List[str]]:
         """
         处理数据行，包括空值处理和数据继承
@@ -177,9 +191,9 @@ class TableExtractor:
         processed = []
         for i, cell in enumerate(row):
             value = cell.strip()
-            if i == 1 and not value:  # 企业名称为空
+            if company_index is not None and i == company_index and not value:
                 processed.append(last_company)
-            elif i == 2 and not value:  # 品牌/通用名称为空
+            elif brand_index is not None and i == brand_index and not value:
                 processed.append(last_brand)
             else:
                 processed.append(value)
@@ -190,8 +204,8 @@ class TableExtractor:
         self,
         table: Table,
         table_index: int,
-        category: str,
-        sub_type: str,
+        category: Optional[str],
+        sub_type: Optional[str],
         batch_number: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
@@ -207,81 +221,119 @@ class TableExtractor:
         Returns:
             车辆信息字典列表
         """
-        # 检查缓存
         if table_index in self._table_cache:
             return self._table_cache[table_index]
-
-        table_cars: List[Dict[str, Any]] = []
         if not table or not table.rows:
-            return table_cars
+            return []
 
-        # 使用快速方法提取所有单元格内容
-        all_rows = self.extract_table_cells_fast(table)
-        if not all_rows:
+        return self._extract_car_info_rows(
+            self.iter_table_rows(table),
+            table_index,
+            category,
+            sub_type,
+            batch_number,
+        )
+
+    def extract_car_info_rows(
+        self,
+        raw_rows: Iterable[List[str]],
+        table_index: int,
+        category: Optional[str],
+        sub_type: Optional[str],
+        batch_number: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Extract records from a one-pass raw-row source."""
+        if table_index in self._table_cache:
+            return self._table_cache[table_index]
+        return self._extract_car_info_rows(
+            self._normalize_rows(raw_rows),
+            table_index,
+            category,
+            sub_type,
+            batch_number,
+        )
+
+    def _extract_car_info_rows(
+        self,
+        row_iterator: Iterator[List[str]],
+        table_index: int,
+        category: Optional[str],
+        sub_type: Optional[str],
+        batch_number: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        table_cars: List[Dict[str, Any]] = []
+
+        try:
+            header_row = next(row_iterator)
+        except StopIteration:
             return table_cars
 
         # 获取并处理表头
-        headers = [clean_text(cell) for cell in all_rows[0] if cell]
+        headers = [
+            clean_text(cell) or f"未命名列_{index + 1}"
+            for index, cell in enumerate(header_row)
+        ]
         if not headers:
             return table_cars
 
         # 预先创建基础信息
+        normalized_category = category or "未知"
         base_info = {
-            "category": category,
-            "sub_type": sub_type,
-            "energytype": 2 if category == "节能型" else 1,
+            "category": normalized_category,
+            "sub_type": sub_type or "未知",
+            "energytype": {"新能源": 1, "节能型": 2}.get(normalized_category),
             "batch": batch_number,
             "table_id": table_index + 1,  # 添加表格ID，从1开始计数
         }
 
-        total_rows = len(all_rows) - 1
-        processed_rows = 0
+        total_rows = 0
+        for row_idx, cells in enumerate(row_iterator, 1):
+            total_rows += 1
+            if not any(str(cell).strip() for cell in cells):
+                continue
 
-        # 分块处理数据行
-        for chunk_start in range(1, len(all_rows), self._chunk_size):
-            chunk_end = min(chunk_start + self._chunk_size, len(all_rows))
-            chunk_rows = all_rows[chunk_start:chunk_end]
-
-            # 批量处理当前块的数据行
-            for row_idx, cells in enumerate(chunk_rows, chunk_start):
-                # 跳过空行
-                if not any(str(cell).strip() for cell in cells):
-                    continue
-
-                processed_rows += 1
-
-                # 列数已经在extract_table_cells_fast中调整过，这里不需要再次调整
-                # 但仍然记录一下原始列数，用于调试
-                if len(cells) != len(headers):
-                    self.logger.debug(
-                        f"表格 {table_index + 1} 第 {row_idx} 行列数已调整: "
-                        f"原始 {len(cells)} 列，调整为 {len(headers)} 列"
-                    )
-
-                # 创建新的字典，避免引用同一个对象
-                car_info = base_info.copy()
-                car_info["raw_text"] = " | ".join(str(cell) for cell in cells)
-
-                # 使用zip优化字段映射，同时清理文本
-                car_info.update(
-                    {
-                        header: clean_text(str(value))
-                        for header, value in zip(headers, cells)
-                    }
+            if len(cells) != len(headers):
+                self.logger.debug(
+                    "表格 %d 第 %d 行列数不一致: 表头 %d，数据 %d",
+                    table_index + 1,
+                    row_idx,
+                    len(headers),
+                    len(cells),
                 )
 
-                # 处理车辆信息
-                from ..utils.validation import process_car_info
+            car_info = base_info.copy()
+            car_info["raw_text"] = " | ".join(str(cell) for cell in cells)
+            car_info.update(
+                {
+                    header: clean_text(str(value))
+                    for header, value in zip(headers, cells)
+                }
+            )
 
-                car_info = process_car_info(car_info, batch_number)
-                table_cars.append(car_info)
+            car_info = process_car_info(car_info, batch_number)
+            is_valid, reason, validated = validate_car_info(car_info)
+            if is_valid and validated is not None:
+                table_cars.append(validated)
+            else:
+                self.logger.debug(
+                    "跳过表格 %d 第 %d 行: %s",
+                    table_index + 1,
+                    row_idx,
+                    reason,
+                )
 
-            # 主动触发垃圾回收
-            if len(table_cars) > 5000:
-                gc.collect()
+            if total_rows % self._chunk_size == 0:
+                self.logger.debug(
+                    "表格 %d 已流式处理 %d 行", table_index + 1, total_rows
+                )
 
         # 缓存结果
         self._table_cache[table_index] = table_cars
+        self._table_metrics[table_index + 1] = {
+            "candidate_count": total_rows,
+            "valid_count": len(table_cars),
+            "invalid_count": total_rows - len(table_cars),
+        }
 
         self.logger.info(
             f"表格 {table_index + 1} 处理了 {total_rows} 行，提取数据 {len(table_cars)} 行"
@@ -292,4 +344,10 @@ class TableExtractor:
     def clear_cache(self) -> None:
         """清除缓存"""
         self._table_cache.clear()
-        gc.collect()
+        self._table_metrics.clear()
+
+    def get_metrics(self) -> Dict[int, Dict[str, int]]:
+        """Return a copy of per-table candidate and validation counts."""
+        return {
+            table_id: values.copy() for table_id, values in self._table_metrics.items()
+        }

@@ -9,16 +9,16 @@
 - 统计分析车辆能源类型和批次分布
 - 生成数据统计报告
 - 命令行界面支持批量处理
-- 支持大文件和大数据集处理
-- 内存优化，自动资源管理
+- CSV 原子写入，保留所有动态字段
+- 损坏文档、部分批处理失败返回非零状态
 
 ## 最新更新
 
-- **测试结构重组**: 新增模块化测试目录结构，分离单元测试和集成测试
-- **测试覆盖率提升**: 测试覆盖率从58%提高到70%
-- **API改进**: 修复`process_doc`函数API，支持直接保存CSV文件
-- **性能优化**: 添加大文件处理支持和内存资源管理
-- **文档增强**: 完善测试和开发文档
+- **入口统一**：安装命令、脚本和 `python -m src` 共用同一套 Click CLI
+- **验证修复**：独立比较候选行、有效记录与声明数量
+- **错误处理**：API 不再将异常静默转换为空列表
+- **输出安全**：CSV 使用 UTF-8 BOM、完整字段集和原子替换
+- **大文档优化**：超过阈值后逐行解析 OOXML，避免构建完整 Word DOM
 
 ## 安装
 
@@ -42,11 +42,8 @@ doc-processor process 文档路径.docx -o 输出目录
 git clone https://github.com/iyuangang/doc-processor.git
 cd doc-processor
 
-# 安装依赖
-pip install -r requirements.txt
-
-# 开发模式安装
-pip install -e .
+# 安装项目和测试/静态检查工具
+pip install -e ".[dev]"
 ```
 
 ## 使用方法
@@ -67,27 +64,28 @@ python doc_processor.py process 文档目录 -o 输出目录 --pattern "*.docx"
 doc-processor process 文档目录 -o 输出目录 --pattern "*.docx"
 ```
 
-或者，您还可以使用以下方式（可能会显示导入警告）:
+也可以使用包入口，参数和行为完全相同：
 
 ```bash
 # 处理单个文件
-python -m src.cli.main process 文档路径.docx -o 输出目录
+python -m src process 文档路径.docx -o 输出目录
 
 # 处理整个目录下的文件
-python -m src.cli.main process 文档目录 -o 输出目录 --pattern "*.docx"
+python -m src process 文档目录 -o 输出目录 --pattern "*.docx"
 ```
 
 ### 命令行选项
 
 ```bash
 选项:
-  -o, --output PATH     输出文件路径或目录
+  -o, --output PATH     输出目录
   -v, --verbose         显示详细处理信息
   --pattern TEXT        文件匹配模式（用于目录输入）
   --config FILE         配置文件路径
   --log-config FILE     日志配置文件路径
   --chunk-size INTEGER  数据处理块大小
   --skip-verification   跳过批次验证
+  --classic-display     使用传统结果显示
   --help                显示帮助信息
 ```
 
@@ -130,7 +128,7 @@ for file_path in file_list:
         "企业名称": "测试企业A",
         "品牌": "测试品牌X",
         "batch": "1",
-        "energytype": 1,
+        "energytype": 2,
         "category": "节能型",
         "sub_type": "轿车",
         "排量": "1.5L",
@@ -174,7 +172,7 @@ doc-processor/
 │   └── integration/      # 集成测试
 │       ├── cli/          # CLI集成测试
 │       └── processing/   # 处理流程集成测试
-├── pytest.ini            # pytest配置
+├── pyproject.toml        # 构建、依赖、类型和 pytest 配置
 ├── run_tests.py          # 测试运行脚本
 ├── requirements.txt      # 依赖列表
 └── README.md             # 项目说明
@@ -182,28 +180,27 @@ doc-processor/
 
 ## 配置
 
-可以通过JSON配置文件自定义程序行为:
+可以通过 YAML（JSON 也是合法的 YAML 子集）配置程序行为。当前文件输出仅支持 CSV：
 
-```json
-{
-  "document": {
-    "skip_verification": false,
-    "skip_count_check": false,
-    "large_file_threshold": 100
-  },
-  
-  "performance": {
-    "chunk_size": 1000,
-    "cache_size_limit": 52428800,
-    "cleanup_interval": 300
-  },
-  
-  "logging": {
-    "level": "INFO",
-    "file": "logs/app.log"
-  }
-}
+```yaml
+document:
+  skip_verification: false
+  skip_count_check: false
+  large_file_threshold: 100
+  max_paragraphs_to_search: 30
+  max_tables_to_search: 5
+
+performance:
+  chunk_size: 1000
+  # auto 会在文件达到阈值后启用低内存 OOXML 流式解析
+  streaming_xml: auto
+  streaming_threshold_mb: 1
+
+output:
+  use_dashboard: true
 ```
+
+`streaming_xml` 也可设为 `true` 或 `false` 强制选择解析器。在仓库真实样本的逐记录哈希校验中，流式与标准模式输出完全一致；两份大型样本的峰值内存分别由约 2.07 GB、1.24 GB 降至约 47 MB、52 MB。具体耗时和内存会随运行环境变化。
 
 ## 测试
 
@@ -255,7 +252,7 @@ pytest tests/unit/processor/
 - `tests/integration/`: 集成测试
   - `cli/`: 命令行接口集成测试
   - `processing/`: 文档处理流程集成测试
-- `tests/data/`: 测试数据目录
+- `tests/test_data/`: 测试数据目录
 - `tests/utils/`: 测试辅助工具
 
 ### 测试覆盖率
@@ -266,24 +263,11 @@ pytest tests/unit/processor/
 python run_tests.py --html-report
 ```
 
-当前项目测试覆盖率为70%，核心模块覆盖率如下：
-
-- 批次验证模块 (validator.py): 96%
-- 表格提取模块 (extractor.py): 90%
-- 数据模型模块 (car_info.py): 98%
-- 文档解析模块 (parser.py): 88%
-- 处理器模块 (doc_processor.py): 76%
-- 文本处理工具模块 (text_processing.py): 100%
-- 验证工具模块 (validation.py): 96%
-
-覆盖率报告会自动生成HTML文件，保存在`htmlcov/`目录中，可通过浏览器查看详细结果。
+覆盖率报告会生成在 `htmlcov/`，XML 摘要写入 `coverage.xml`。CI 以当前测试运行结果为准，不在文档中维护容易过期的固定百分比。
 
 ## 文档和资源
 
 - [测试说明文档](tests/README.md): 测试结构和运行方法
-- [API参考文档](docs/API.md): 详细的API使用说明
-- [设计文档](docs/DESIGN.md): 系统设计和架构说明
-- [贡献指南](CONTRIBUTING.md): 如何参与项目开发
 
 ## 贡献指南
 

@@ -1,89 +1,18 @@
-"""
-测试CLI命令结构和基本功能
-"""
+"""Tests for canonical CLI behavior and exit codes."""
 
-import os
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-import pytest
-from unittest import mock
-from unittest.mock import patch, MagicMock, ANY
+import yaml
+from click.testing import CliRunner
 
-from src.cli.main import cli, process
-
-
-# 基本验证测试，不使用Click的invoke方法
-def test_cli_exists() -> None:
-    """测试cli命令组是否存在"""
-    assert callable(cli)
-    assert callable(process)
-
-
-@patch("src.cli.main.process_single_file")
-def test_process_function_interface(mock_process_single_file: MagicMock) -> None:
-    """测试process函数接口"""
-    # 模拟返回值
-    mock_process_single_file.return_value = [{"id": 1}]
-
-    # 测试函数参数
-    process_func = process.callback
-    assert callable(process_func)
-
-    # 检查process_single_file函数是否被导入
-    from src.cli.main import process_single_file
-
-    assert callable(process_single_file)
-
-
-@patch("src.cli.main.setup_logging")
-def test_logging_setup_import(mock_setup_logging: MagicMock) -> None:
-    """测试日志设置函数是否被正确导入"""
-    # 检查setup_logging函数是否被导入
-    from src.cli.main import setup_logging
-
-    assert callable(setup_logging)
-
-
-@patch("src.cli.main.process_directory")
-def test_process_directory_import(mock_process_directory: MagicMock) -> None:
-    """测试目录处理函数是否被正确导入"""
-    # 检查process_directory函数是否被导入
-    from src.cli.main import process_directory
-
-    assert callable(process_directory)
-
-
-@patch("src.cli.main.load_config")
-def test_load_config_import(mock_load_config: MagicMock) -> None:
-    """测试配置加载函数是否被正确导入"""
-    # 检查load_config函数是否被导入
-    from src.cli.main import load_config
-
-    assert callable(load_config)
+from src.cli.main import cli
 
 
 def test_cli_command_structure() -> None:
-    """测试CLI命令结构是否正确"""
-    # 验证cli是一个命令组
-    assert hasattr(cli, "commands")
-
-    # 验证process是cli命令组的一个子命令
     assert "process" in cli.commands
-    assert cli.commands["process"] == process
-
-
-@patch("src.cli.main.click.echo")
-@patch("src.cli.main.os.path.isdir")
-def test_cli_process_params(mock_isdir: MagicMock, mock_echo: MagicMock) -> None:
-    """测试cli命令参数定义"""
-    # 检查process命令的参数
-    assert process.params is not None
-
-    # 找到参数名列表
-    param_names = [p.name for p in process.params]
-
-    # 验证需要的参数都在命令中定义了
-    required_params = [
+    names = [parameter.name for parameter in cli.commands["process"].params]
+    assert names == [
         "input_path",
         "output",
         "verbose",
@@ -92,6 +21,107 @@ def test_cli_process_params(mock_isdir: MagicMock, mock_echo: MagicMock) -> None
         "log_config",
         "chunk_size",
         "skip_verification",
+        "classic_display",
     ]
-    for param in required_params:
-        assert param in param_names
+
+
+@patch("src.cli.main.setup_logging")
+@patch("src.cli.main.process_single_file")
+def test_single_file_success(
+    mock_process: MagicMock, mock_logging: MagicMock, tmp_path: Path
+) -> None:
+    source = tmp_path / "sample.docx"
+    source.write_bytes(b"placeholder")
+    mock_process.return_value = [{"vmodel": "MODEL-1"}]
+
+    result = CliRunner().invoke(cli, ["process", str(source)])
+
+    assert result.exit_code == 0
+    assert "共提取 1 条记录" in result.output
+    config = mock_process.call_args.args[2]
+    assert config["document"]["skip_verification"] is False
+
+
+@patch("src.cli.main.setup_logging")
+@patch("src.cli.main.process_single_file", return_value=[])
+def test_empty_result_has_nonzero_exit(
+    mock_process: MagicMock, mock_logging: MagicMock, tmp_path: Path
+) -> None:
+    source = tmp_path / "sample.docx"
+    source.write_bytes(b"placeholder")
+    result = CliRunner().invoke(cli, ["process", str(source)])
+    assert result.exit_code != 0
+    assert "未提取到有效车辆记录" in result.output
+
+
+@patch("src.cli.main.setup_logging")
+@patch("src.cli.main.process_directory")
+def test_partial_directory_has_nonzero_exit(
+    mock_process: MagicMock, mock_logging: MagicMock, tmp_path: Path
+) -> None:
+    mock_process.return_value = {
+        "status": "partial",
+        "total_files": 2,
+        "success_files": 1,
+        "error_files": 1,
+        "total_records": 1,
+        "errors": [{"file": "bad.docx", "error": "broken"}],
+    }
+    result = CliRunner().invoke(cli, ["process", str(tmp_path)])
+    assert result.exit_code != 0
+    assert "目录处理未全部成功" in result.output
+
+
+@patch("src.cli.main.setup_logging")
+@patch("src.cli.main.process_single_file", return_value=[{"vmodel": "MODEL-1"}])
+def test_cli_overrides_are_forwarded(
+    mock_process: MagicMock, mock_logging: MagicMock, tmp_path: Path
+) -> None:
+    source = tmp_path / "sample.docx"
+    source.write_bytes(b"placeholder")
+    result = CliRunner().invoke(
+        cli,
+        [
+            "process",
+            str(source),
+            "--chunk-size",
+            "50",
+            "--skip-verification",
+            "--classic-display",
+        ],
+    )
+    assert result.exit_code == 0
+    config = mock_process.call_args.args[2]
+    assert config["performance"]["chunk_size"] == 50
+    assert config["document"]["skip_verification"] is True
+    assert config["output"]["use_dashboard"] is False
+
+
+@patch("src.cli.main.setup_logging")
+@patch("src.cli.main.process_single_file", return_value=[{"vmodel": "MODEL-1"}])
+def test_config_values_are_preserved_without_cli_overrides(
+    mock_process: MagicMock, mock_logging: MagicMock, tmp_path: Path
+) -> None:
+    source = tmp_path / "sample.docx"
+    source.write_bytes(b"placeholder")
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        yaml.safe_dump(
+            {
+                "performance": {"chunk_size": 42},
+                "document": {"skip_verification": True},
+                "output": {"use_dashboard": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli, ["process", str(source), "--config", str(config_file)]
+    )
+
+    assert result.exit_code == 0
+    config = mock_process.call_args.args[2]
+    assert config["performance"]["chunk_size"] == 42
+    assert config["document"]["skip_verification"] is True
+    assert config["output"]["use_dashboard"] is False

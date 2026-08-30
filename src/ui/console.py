@@ -276,6 +276,16 @@ def display_consistency_result(result: Dict[str, Any]) -> None:
         )
         return
 
+    if result["status"] == "skipped":
+        console.print(
+            Panel(
+                "[blue]ℹ️ 已按配置跳过批次一致性验证[/blue]",
+                title="数据一致性检查",
+                border_style="blue",
+            )
+        )
+        return
+
     if result["status"] == "unknown":
         console.print(
             Panel(
@@ -304,7 +314,7 @@ def display_consistency_result(result: Dict[str, Any]) -> None:
     elif result["status"] == "internal_match":
         console.print(
             Panel(
-                f"[green]✅ 第{result['batch']}批：内部一致性检查通过，表格记录总数 {result['actual_count']} 与处理结果数 {result['processed_count']} 一致[/green]",
+                f"[green]✅ 第{result['batch']}批：内部一致性检查通过，候选记录数 {result.get('candidate_count', result['actual_count'])} 与有效记录数 {result['processed_count']} 一致[/green]",
                 title="数据一致性检查",
                 border_style="green",
             )
@@ -313,7 +323,7 @@ def display_consistency_result(result: Dict[str, Any]) -> None:
         diff_text = f"差异 {result['difference']} 条" if "difference" in result else ""
         console.print(
             Panel(
-                f"[red]❌ 第{result['batch']}批：内部一致性检查失败！表格记录总数 {result['actual_count']} 与处理结果数 {result['processed_count']} 不一致，{diff_text}[/red]",
+                f"[red]❌ 第{result['batch']}批：内部一致性检查失败！候选记录数 {result.get('candidate_count', '未知')}，有效记录数 {result['processed_count']}，{diff_text}[/red]",
                 title="⚠️ 数据一致性检查",
                 border_style="red",
             )
@@ -701,6 +711,10 @@ def display_summary_dashboard(
         status_style = "red"
         status_icon = "❌"
         status_text = "数据不一致"
+    elif consistency_result["status"] == "skipped":
+        status_style = "blue"
+        status_icon = "ℹ️"
+        status_text = "已跳过验证"
     else:
         status_style = "yellow"
         status_icon = "⚠️"

@@ -196,7 +196,7 @@ class TestSetupDefaultLogging:
         setup_default_logging(logging.INFO)
 
         # 验证结果
-        mock_makedirs.assert_called_once_with("logs")
+        mock_makedirs.assert_not_called()
         mock_basic_config.assert_called_once()
         mock_info.assert_called_once_with("使用默认配置设置日志")
 
@@ -225,6 +225,14 @@ class TestSettings:
             # 清理临时文件
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
+
+    def test_settings_accepts_in_memory_mapping(self) -> None:
+        source = {"document": {"skip_verification": True}}
+        settings = Settings(source)
+        assert settings.config_path is None
+        assert settings.get("document.skip_verification") is True
+        source["document"]["skip_verification"] = False
+        assert settings.get("document.skip_verification") is True
 
     def test_settings_get(self) -> None:
         """测试获取配置项"""

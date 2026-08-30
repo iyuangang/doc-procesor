@@ -1,47 +1,21 @@
-# 车辆数据文档处理器配置文件
+# 车辆数据文档处理器配置
 
-# 文档处理相关配置
 document:
-  # 是否跳过验证
+  # 跳过全部一致性验证；数据提取和字段验证仍会执行。
   skip_verification: false
-  # 支持的文档类型
-  supported_formats:
-    - ".docx"
+  # 不从文档正文或合计行搜索声明记录数。
+  skip_count_check: false
+  large_file_threshold: 100
+  max_paragraphs_to_search: 30
+  max_tables_to_search: 5
 
-# 性能相关配置
 performance:
-  # 处理块大小
+  # 表格数据的逻辑处理块大小，必须大于 0。
   chunk_size: 1000
-  # 并行处理选项
-  parallel: false
-  # 最大线程数
-  max_threads: 4
+  # auto: 文件达到阈值后使用低内存 OOXML 流式解析；也可设 true/false 强制切换。
+  streaming_xml: auto
+  streaming_threshold_mb: 1
 
-# 输出相关配置
 output:
-  # 输出格式（支持 csv, json, excel）
-  format: "csv"
-  # 是否输出详细统计
-  detailed_stats: true
-  # 是否生成汇总报告
-  summary_report: true
-  # 在简洁模式下是否显示关键信息
-  show_key_info_in_compact_mode: true
-  # 是否使用仪表盘显示模式
+  # false 时使用传统表格输出；文件输出当前固定为 CSV。
   use_dashboard: true
-  # 仪表盘显示主题，可选值: 'default', 'dark', 'light'
-  dashboard_theme: 'default'
-  # 显示图表宽度
-  chart_width: 40
-
-# 数据验证规则
-validation:
-  # 需要验证的字段
-  required_fields:
-    - "vmodel"
-    - "category"
-    - "batch"
-  # 批次号格式检查正则表达式
-  batch_number_pattern: "^[0-9]+$"
-  # 自动修正类别名称
-  auto_correct_categories: true 

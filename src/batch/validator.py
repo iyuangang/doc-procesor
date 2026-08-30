@@ -11,6 +11,9 @@ def verify_batch_consistency(
     cars: List[Dict[str, Any]],
     batch_number: Optional[str],
     declared_count: Optional[int] = None,
+    *,
+    candidate_count: Optional[int] = None,
+    invalid_count: int = 0,
 ) -> Dict[str, Any]:
     """
     验证每个批次的表格数据总和是否与批次总记录数一致
@@ -36,53 +39,68 @@ def verify_batch_consistency(
             table_counts[table_id] = 0
         table_counts[table_id] += 1
 
-    # 计算从表格中提取的总记录数
-    total_extracted_count = sum(table_counts.values())
+    processed_count = len(cars)
 
     # 验证结果
     if declared_count is not None:
         # 如果有声明的总记录数，比较声明数与实际数
-        if total_extracted_count == declared_count:
+        if processed_count == declared_count:
             return {
                 "status": "match",
-                "message": f"批次记录数匹配：声明 {declared_count}, 实际 {total_extracted_count}",
+                "message": f"批次记录数匹配：声明 {declared_count}, 实际 {processed_count}",
                 "batch": batch_number,
-                "actual_count": total_extracted_count,
+                "actual_count": processed_count,
                 "declared_count": declared_count,
                 "table_counts": table_counts,
+                "candidate_count": candidate_count,
+                "invalid_count": invalid_count,
             }
         else:
             return {
                 "status": "mismatch",
-                "message": f"批次记录数不匹配：声明 {declared_count}, 实际 {total_extracted_count}",
+                "message": f"批次记录数不匹配：声明 {declared_count}, 实际 {processed_count}",
                 "batch": batch_number,
-                "actual_count": total_extracted_count,
+                "actual_count": processed_count,
                 "declared_count": declared_count,
                 "table_counts": table_counts,
-                "difference": declared_count - total_extracted_count,
+                "difference": declared_count - processed_count,
+                "candidate_count": candidate_count,
+                "invalid_count": invalid_count,
             }
-    else:
-        # 如果没有声明的总记录数，验证表格总记录数与处理后的记录数是否一致
-        processed_count = len(cars)
-        if total_extracted_count == processed_count:
+
+    if candidate_count is not None:
+        if candidate_count == processed_count:
             return {
                 "status": "internal_match",
-                "message": f"内部一致性检查通过：表格记录总数 {total_extracted_count} 与处理结果数 {processed_count} 一致",
+                "message": f"内部一致性检查通过：候选记录数 {candidate_count} 与有效记录数 {processed_count} 一致",
                 "batch": batch_number,
-                "actual_count": total_extracted_count,
+                "actual_count": processed_count,
                 "processed_count": processed_count,
                 "table_counts": table_counts,
+                "candidate_count": candidate_count,
+                "invalid_count": invalid_count,
             }
-        else:
-            return {
-                "status": "internal_mismatch",
-                "message": f"内部一致性检查失败：表格记录总数 {total_extracted_count} 与处理结果数 {processed_count} 不一致",
-                "batch": batch_number,
-                "actual_count": total_extracted_count,
-                "processed_count": processed_count,
-                "table_counts": table_counts,
-                "difference": total_extracted_count - processed_count,
-            }
+        return {
+            "status": "internal_mismatch",
+            "message": f"内部一致性检查失败：候选记录数 {candidate_count}，有效记录数 {processed_count}",
+            "batch": batch_number,
+            "actual_count": processed_count,
+            "processed_count": processed_count,
+            "table_counts": table_counts,
+            "candidate_count": candidate_count,
+            "invalid_count": invalid_count,
+            "difference": candidate_count - processed_count,
+        }
+
+    return {
+        "status": "unknown",
+        "message": "缺少声明数量和独立候选行计数，无法执行一致性验证",
+        "batch": batch_number,
+        "actual_count": processed_count,
+        "processed_count": processed_count,
+        "table_counts": table_counts,
+        "invalid_count": invalid_count,
+    }
 
 
 def verify_all_batches(all_cars_data: List[Dict[str, Any]]) -> Dict[str, Any]:

@@ -5,36 +5,27 @@
 import gc
 import logging
 import os
-import re
 import time
-import tempfile
-import shutil
-from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from collections import deque
+from typing import Dict, Any, Optional, List
+from zipfile import ZipFile
 
 import psutil
 from docx import Document
 from docx.document import Document as DocxDocument
-import pandas as pd
 
 from ..batch.validator import verify_batch_consistency, verify_all_batches
 from ..config.settings import settings
 from ..document.parser import (
-    extract_doc_content,
     extract_declared_count,
-    get_table_type,
+    extract_declared_count_from_rows,
+    extract_declared_count_from_text,
 )
+from ..document.streaming import iter_document_blocks
 from ..models.document_node import DocumentNode, DocumentStructure
 from ..table.extractor import TableExtractor
 from ..utils.chinese_numbers import extract_batch_number
-from ..utils.validation import process_car_info
-from ..ui.console import (
-    display_consistency_result,
-    display_doc_content,
-    display_batch_verification,
-    display_statistics,
-    display_summary_dashboard,
-)
+from ..utils.csv_output import write_csv_atomic
 
 
 class ProcessingError(Exception):
@@ -71,12 +62,7 @@ class DocProcessor:
         self.config = config or {}
         self.logger = logging.getLogger(__name__)
         self.doc_structure = DocumentStructure()
-
-        try:
-            self._load_document()
-        except Exception as e:
-            self.logger.error(f"初始化文档处理器失败: {str(e)}")
-            raise DocumentError(f"无法加载文档 {doc_path}: {str(e)}")
+        self.doc: Optional[DocxDocument] = None
 
         self.current_category: Optional[str] = None
         self.current_type: Optional[str] = None
@@ -84,16 +70,19 @@ class DocProcessor:
         self.cars: List[Dict[str, Any]] = []
         self._processing_times: Dict[str, float] = {}
         self.declared_count: Optional[int] = None  # 声明的总记录数
+        self.consistency_result: Dict[str, Any] = {}
+        self.batch_results: Dict[str, Any] = {}
+        self.candidate_record_count = 0
+        self.invalid_record_count = 0
 
         # 从配置加载设置
         self._chunk_size = self._get_config("performance.chunk_size", 1000)
+        if not isinstance(self._chunk_size, int) or self._chunk_size <= 0:
+            raise DocumentError("performance.chunk_size 必须是大于 0 的整数")
         self.verbose = verbose
-        self._cache_size_limit = self._get_config(
-            "performance.cache_size_limit", 50 * 1024 * 1024
-        )
-        self._cleanup_interval = self._get_config("performance.cleanup_interval", 300)
         # 添加跳过总记录数检查的配置选项
         self._skip_count_check = self._get_config("document.skip_count_check", False)
+        self._skip_verification = self._get_config("document.skip_verification", False)
         # 设置搜索限制
         self._max_paragraphs_to_search = self._get_config(
             "document.max_paragraphs_to_search", 30
@@ -101,16 +90,11 @@ class DocProcessor:
         self._max_tables_to_search = self._get_config(
             "document.max_tables_to_search", 5
         )
+        self._build_structure = self._get_config("document.build_structure", verbose)
 
-        # 预编译正则表达式
-        self._batch_pattern = re.compile(r"第([一二三四五六七八九十百零\d]+)批")
-        self._whitespace_pattern = re.compile(r"\s+")
-        self._chinese_number_pattern = re.compile(r"([一二三四五六七八九十百零]+)")
-        self._count_pattern = re.compile(
-            r"(共计|总计|合计).*?(\d+).*?(款|个|种|辆|台|项)"
-        )  # 总记录数模式
+        self.file_size = self._get_file_size()
+        self._streaming_xml = self._should_stream_document()
 
-        self._last_cache_cleanup = time.time()
         self.logger.info(f"初始化文档处理器: {doc_path}")
 
         self.current_section: Optional[DocumentNode] = None
@@ -121,6 +105,12 @@ class DocProcessor:
 
         # 初始化表格提取器
         self.table_extractor = TableExtractor(chunk_size=self._chunk_size)
+
+        try:
+            self._load_document()
+        except Exception as e:
+            self.logger.error(f"初始化文档处理器失败: {str(e)}")
+            raise DocumentError(f"无法加载文档 {doc_path}: {str(e)}")
 
     def _get_config(self, key: str, default: Any) -> Any:
         """
@@ -149,8 +139,42 @@ class DocProcessor:
         # 如果没有提供配置，尝试从全局设置获取
         try:
             return settings.get(key, default)
-        except:
+        except (AttributeError, TypeError):
             return default
+
+    def _get_file_size(self) -> int:
+        """Return the source size while preserving the public error contract."""
+        try:
+            return os.path.getsize(self.doc_path)
+        except OSError as exc:
+            raise DocumentError(f"无法访问文档 {self.doc_path}: {exc}") from exc
+
+    def _should_stream_document(self) -> bool:
+        """Resolve the configured parser mode for this document."""
+        mode = self._get_config("performance.streaming_xml", "auto")
+        if isinstance(mode, str):
+            normalized = mode.strip().lower()
+            if normalized in {"true", "yes", "on", "1"}:
+                return True
+            if normalized in {"false", "no", "off", "0"}:
+                return False
+            if normalized != "auto":
+                raise DocumentError(
+                    "performance.streaming_xml 必须是 auto、true 或 false"
+                )
+        elif isinstance(mode, bool):
+            return mode
+        else:
+            raise DocumentError("performance.streaming_xml 必须是 auto、true 或 false")
+
+        threshold_mb = self._get_config("performance.streaming_threshold_mb", 1)
+        try:
+            threshold_bytes = max(float(threshold_mb), 0) * 1024 * 1024
+        except (TypeError, ValueError) as exc:
+            raise DocumentError(
+                "performance.streaming_threshold_mb 必须是非负数"
+            ) from exc
+        return self.file_size >= threshold_bytes
 
     def _load_document(self) -> None:
         """
@@ -160,24 +184,27 @@ class DocProcessor:
             DocumentError: 无法加载文档
         """
         try:
-            file_size = os.path.getsize(self.doc_path)
             self.logger.info(
-                f"加载文档 {self.doc_path}, 大小: {file_size / 1024 / 1024:.2f}MB"
+                "加载文档 %s, 大小: %.2fMB, 解析模式: %s",
+                self.doc_path,
+                self.file_size / 1024 / 1024,
+                "OOXML 流式" if self._streaming_xml else "python-docx",
             )
+
+            if self._streaming_xml:
+                with ZipFile(self.doc_path) as archive:
+                    archive.getinfo("word/document.xml")
+                return
 
             large_file_threshold = (
                 self._get_config("document.large_file_threshold", 100) * 1024 * 1024
             )
-            if file_size > large_file_threshold:  # 配置的阈值，默认100MB
+            if self.file_size > large_file_threshold:  # 配置的阈值，默认100MB
                 self.logger.warning(
-                    f"文档大小超过{large_file_threshold / 1024 / 1024}MB, 使用临时文件处理"
+                    "文档大小超过%.1fMB，python-docx 将在内存中解析该文件",
+                    large_file_threshold / 1024 / 1024,
                 )
-                with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                    shutil.copy2(self.doc_path, tmp.name)
-                    self.doc = Document(tmp.name)
-                    os.unlink(tmp.name)
-            else:
-                self.doc = Document(self.doc_path)
+            self.doc = Document(self.doc_path)
         except Exception as e:
             self.logger.error(f"加载文档失败: {str(e)}")
             raise DocumentError(f"无法加载文档 {self.doc_path}: {str(e)}")
@@ -212,7 +239,258 @@ class DocProcessor:
             self.doc_path,
             max_paragraphs=self._max_paragraphs_to_search,
             max_tables=self._max_tables_to_search,
+            document=self.doc,
         )
+
+    def _process_paragraph(self, text: str) -> None:
+        """Update document context from one non-empty body paragraph."""
+        if not self.batch_number:
+            self.batch_number = extract_batch_number(text)
+            if self.batch_number:
+                self.doc_structure.set_batch_number(self.batch_number)
+                self.logger.info("提取到批次号: %s", self.batch_number)
+                if self._build_structure:
+                    self.doc_structure.add_node(
+                        f"第{self.batch_number}批", "batch", level=0
+                    )
+
+        if "节能型汽车" in text:
+            self.current_category = "节能型"
+            self.current_type = None
+            self.current_section = (
+                self.doc_structure.add_node("节能型汽车", "section", content=text)
+                if self._build_structure
+                else None
+            )
+            self.current_subsection = None
+            self.current_numbered_section = None
+        elif "新能源汽车" in text:
+            self.current_category = "新能源"
+            self.current_type = None
+            self.current_section = (
+                self.doc_structure.add_node("新能源汽车", "section", content=text)
+                if self._build_structure
+                else None
+            )
+            self.current_subsection = None
+            self.current_numbered_section = None
+        elif text.startswith("（") and not any(char.isdigit() for char in text):
+            self.current_type = text.strip()
+            self.current_subsection = (
+                self.doc_structure.add_node(
+                    self.current_type,
+                    "subsection",
+                    content=text,
+                    parent_node=self.current_section,
+                )
+                if self._build_structure
+                else None
+            )
+            self.current_numbered_section = None
+        elif self._build_structure and text.startswith(("1.", "2.", "3.", "4.", "5.")):
+            self.current_numbered_section = self.doc_structure.add_node(
+                text.strip(),
+                "numbered_section",
+                content=text,
+                parent_node=self.current_subsection or self.current_section,
+            )
+        elif (
+            self._build_structure
+            and text.startswith("（")
+            and any(number in text for number in "123456789")
+        ):
+            self.doc_structure.add_node(
+                text.strip(),
+                "numbered_subsection",
+                content=text,
+                parent_node=(
+                    self.current_numbered_section
+                    or self.current_subsection
+                    or self.current_section
+                ),
+            )
+        elif self._build_structure:
+            if "勘误" in text or "说明" in text:
+                node_type = "note"
+            elif "更正" in text or "修改" in text:
+                node_type = "correction"
+            else:
+                node_type = "text"
+            self.doc_structure.add_node(
+                text[:40] + "...",
+                node_type,
+                content=text,
+                parent_node=self.current_section,
+            )
+
+    def _add_table_node(
+        self,
+        table_index: int,
+        row_count: int,
+        column_count: int,
+        record_count: int,
+    ) -> None:
+        if not self._build_structure:
+            return
+        parent_node = (
+            self.current_numbered_section
+            or self.current_subsection
+            or self.current_section
+        )
+        self.doc_structure.add_node(
+            f"表格 {table_index + 1}",
+            "table",
+            metadata={
+                "rows": row_count,
+                "columns": column_count,
+                "records": record_count,
+                "category": self.current_category,
+                "sub_type": self.current_type,
+            },
+            parent_node=parent_node,
+        )
+
+    def _process_standard_body(self) -> tuple[int, int, int]:
+        """Process the body through python-docx for small documents."""
+        if self.doc is None:
+            raise ProcessingError("标准解析模式下文档尚未加载")
+
+        table_count = 0
+        row_count = 0
+        error_count = 0
+        tables = self.doc.tables
+        table_lookup = {
+            id(table._element): (index, table) for index, table in enumerate(tables)
+        }
+
+        for element in self.doc.element.body:
+            try:
+                if element.tag.endswith("p"):
+                    text = element.text.strip()
+                    if text:
+                        self._process_paragraph(text)
+                elif element.tag.endswith("tbl"):
+                    table_count += 1
+                    table_info = table_lookup.get(id(element))
+                    if table_info is None:
+                        raise ProcessingError("无法将 XML 表格映射到文档表格")
+                    table_index, table = table_info
+                    table_rows = len(table._tbl.tr_lst)
+                    row_count += table_rows
+                    table_cars = self.table_extractor.extract_car_info(
+                        table,
+                        table_index,
+                        self.current_category,
+                        self.current_type,
+                        self.batch_number,
+                    )
+                    self.cars.extend(table_cars)
+                    column_count = (
+                        len(table.rows[0].cells)
+                        if self._build_structure and table.rows
+                        else 0
+                    )
+                    self._add_table_node(
+                        table_index,
+                        table_rows,
+                        column_count,
+                        len(table_cars),
+                    )
+                    if self.verbose:
+                        self.logger.info(
+                            "处理表格 %d, 提取到 %d 条记录",
+                            table_index + 1,
+                            len(table_cars),
+                        )
+            except Exception as exc:
+                error_count += 1
+                self.logger.error("处理元素出错: %s", exc)
+
+        return table_count, row_count, error_count
+
+    def _process_streaming_body(self) -> tuple[int, int, int]:
+        """Process the main OOXML part without constructing a document DOM."""
+        table_count = 0
+        row_count = 0
+        error_count = 0
+        paragraph_count = 0
+        table_declared_count: Optional[int] = None
+
+        for element_type, value in iter_document_blocks(self.doc_path):
+            try:
+                if element_type == "paragraph":
+                    paragraph_count += 1
+                    text = str(value).strip()
+                    if (
+                        text
+                        and not self._skip_count_check
+                        and self.declared_count is None
+                        and paragraph_count <= self._max_paragraphs_to_search
+                    ):
+                        self.declared_count = extract_declared_count_from_text(text)
+                    if text:
+                        self._process_paragraph(text)
+                    continue
+
+                table_index = table_count
+                table_count += 1
+                raw_row_count = 0
+                column_count = 0
+                first_rows: List[List[str]] = []
+                last_rows: deque[List[str]] = deque(maxlen=3)
+
+                def observed_rows() -> Any:
+                    nonlocal raw_row_count, column_count
+                    for raw_row in value:
+                        raw_row_count += 1
+                        if raw_row_count == 1 and self._build_structure:
+                            column_count = len(raw_row)
+                        if raw_row_count <= 3:
+                            first_rows.append(raw_row)
+                        last_rows.append(raw_row)
+                        yield raw_row
+
+                table_cars = self.table_extractor.extract_car_info_rows(
+                    observed_rows(),
+                    table_index,
+                    self.current_category,
+                    self.current_type,
+                    self.batch_number,
+                )
+                row_count += raw_row_count
+
+                if (
+                    not self._skip_count_check
+                    and table_declared_count is None
+                    and table_count <= self._max_tables_to_search
+                ):
+                    rows_to_check = first_rows
+                    if list(last_rows) != first_rows:
+                        rows_to_check = first_rows + list(last_rows)
+                    table_declared_count = extract_declared_count_from_rows(
+                        rows_to_check
+                    )
+                self.cars.extend(table_cars)
+                self._add_table_node(
+                    table_index,
+                    raw_row_count,
+                    column_count,
+                    len(table_cars),
+                )
+                if self.verbose:
+                    self.logger.info(
+                        "流式处理表格 %d, 提取到 %d 条记录",
+                        table_index + 1,
+                        len(table_cars),
+                    )
+            except Exception as exc:
+                error_count += 1
+                self.logger.error("流式处理元素出错: %s", exc)
+
+        if self.declared_count is None:
+            self.declared_count = table_declared_count
+
+        return table_count, row_count, error_count
 
     def process(self) -> List[Dict[str, Any]]:
         """
@@ -228,169 +506,10 @@ class DocProcessor:
             self.logger.info(f"开始处理文档: {self.doc_path}")
             self._log_time("init")
 
-            table_count = 0
-            row_count = 0
-            error_count = 0
-
-            # 遍历文档中的所有元素
-            for element in self.doc.element.body:
-                try:
-                    # 处理段落
-                    if element.tag.endswith("p"):
-                        text = element.text.strip()
-                        if not text:
-                            continue
-
-                        # 提取批次号
-                        if not self.batch_number:
-                            self.batch_number = extract_batch_number(text)
-                            if self.batch_number:
-                                self.doc_structure.set_batch_number(self.batch_number)
-                                self.logger.info(f"提取到批次号: {self.batch_number}")
-                                self.doc_structure.add_node(
-                                    f"第{self.batch_number}批", "batch", level=0
-                                )
-
-                        # 更新分类信息
-                        if "节能型汽车" in text:
-                            self.current_category = "节能型"
-                            self.current_section = self.doc_structure.add_node(
-                                "节能型汽车", "section", content=text
-                            )
-                            self.current_subsection = None
-                            self.current_numbered_section = None
-                            self.logger.debug(f"更新分类: {self.current_category}")
-                        elif "新能源汽车" in text:
-                            self.current_category = "新能源"
-                            self.current_section = self.doc_structure.add_node(
-                                "新能源汽车", "section", content=text
-                            )
-                            self.current_subsection = None
-                            self.current_numbered_section = None
-                            self.logger.debug(f"更新分类: {self.current_category}")
-                        elif text.startswith("（") and not any(
-                            str.isdigit() for str in text
-                        ):
-                            self.current_subsection = self.doc_structure.add_node(
-                                text.strip(),
-                                "subsection",
-                                content=text,
-                                parent_node=self.current_section,
-                            )
-                            self.current_numbered_section = None
-                            self.logger.debug(f"更新类型: {text}")
-                        # 处理带数字编号的节点
-                        elif text.startswith(("1.", "2.", "3.", "4.", "5.")):
-                            self.current_numbered_section = self.doc_structure.add_node(
-                                text.strip(),
-                                "numbered_section",
-                                content=text,
-                                parent_node=self.current_subsection
-                                or self.current_section,
-                            )
-                            self.logger.debug(f"更新编号节点: {text}")
-                        # 处理带括号数字编号的子节点
-                        elif text.startswith("（") and any(
-                            num in text for num in "123456789"
-                        ):
-                            if self.current_numbered_section:
-                                self.doc_structure.add_node(
-                                    text.strip(),
-                                    "numbered_subsection",
-                                    content=text,
-                                    parent_node=self.current_numbered_section,
-                                )
-                            else:
-                                self.doc_structure.add_node(
-                                    text.strip(),
-                                    "numbered_subsection",
-                                    content=text,
-                                    parent_node=self.current_subsection
-                                    or self.current_section,
-                                )
-                            self.logger.debug(f"更新编号子节点: {text}")
-                        elif "勘误" in text or "说明" in text:
-                            self.doc_structure.add_node(
-                                text[:40] + "...",
-                                "note",
-                                content=text,
-                                parent_node=self.current_section,
-                            )
-                        elif "更正" in text or "修改" in text:
-                            self.doc_structure.add_node(
-                                text[:40] + "...",
-                                "correction",
-                                content=text,
-                                parent_node=self.current_section,
-                            )
-                        else:
-                            self.doc_structure.add_node(
-                                text[:40] + "...",
-                                "text",
-                                content=text,
-                                parent_node=self.current_section,
-                            )
-
-                    # 处理表格
-                    elif element.tag.endswith("tbl"):
-                        table_count += 1
-                        for i, table in enumerate(self.doc.tables):
-                            if table._element is element:
-                                if table.rows:
-                                    row_count += len(table.rows)
-                                try:
-                                    # 确定表格所属的类别和子类型
-                                    current_sub_type = (
-                                        self.current_subsection.title
-                                        if self.current_subsection
-                                        else None
-                                    )
-
-                                    # 提取表格中的车辆信息
-                                    table_cars = self.table_extractor.extract_car_info(
-                                        table,
-                                        i,
-                                        self.current_category,
-                                        current_sub_type,
-                                        self.batch_number,
-                                    )
-                                    self.cars.extend(table_cars)
-
-                                    # 添加表格节点到正确的父节点
-                                    parent_node = (
-                                        self.current_numbered_section
-                                        or self.current_subsection
-                                        or self.current_section
-                                    )
-                                    self.doc_structure.add_node(
-                                        f"表格 {i + 1}",
-                                        "table",
-                                        metadata={
-                                            "rows": len(table.rows),
-                                            "columns": len(table.rows[0].cells)
-                                            if table.rows
-                                            else 0,
-                                            "records": len(table_cars),
-                                            "category": self.current_category,
-                                            "sub_type": current_sub_type,
-                                        },
-                                        parent_node=parent_node,
-                                    )
-
-                                    if self.verbose:
-                                        self.logger.info(
-                                            f"处理表格 {i + 1}, 提取到 {len(table_cars)} 条记录"
-                                        )
-                                except Exception as e:
-                                    error_count += 1
-                                    self.logger.error(
-                                        f"处理表格 {i + 1} 出错: {str(e)}"
-                                    )
-                                break
-                except Exception as e:
-                    error_count += 1
-                    self.logger.error(f"处理元素出错: {str(e)}")
-                    continue
+            if self._streaming_xml:
+                table_count, row_count, error_count = self._process_streaming_body()
+            else:
+                table_count, row_count, error_count = self._process_standard_body()
 
             self._log_time("process")
             self.logger.info(
@@ -398,67 +517,58 @@ class DocProcessor:
                 f"{len(self.cars)} 条记录, {error_count} 个错误"
             )
 
-            # 执行批次数据一致性验证 - 只在处理后执行一次
-            verification_start = time.time()
+            if error_count:
+                raise ProcessingError(f"处理过程中出现 {error_count} 个元素错误")
 
-            # 获取声明的总记录数（如果尚未获取）
-            if self.declared_count is None:
-                self.declared_count = self._extract_declared_count()
-
-            consistency_result = verify_batch_consistency(
-                self.cars, self.batch_number, self.declared_count
+            metrics = self.table_extractor.get_metrics()
+            self.candidate_record_count = sum(
+                item["candidate_count"] for item in metrics.values()
             )
+            self.invalid_record_count = sum(
+                item["invalid_count"] for item in metrics.values()
+            )
+
+            verification_start = time.time()
+            if self._skip_verification:
+                self.consistency_result = {
+                    "status": "skipped",
+                    "message": "已按配置跳过批次一致性验证",
+                    "batch": self.batch_number,
+                    "actual_count": len(self.cars),
+                    "candidate_count": self.candidate_record_count,
+                    "invalid_count": self.invalid_record_count,
+                }
+            else:
+                if self.declared_count is None and not self._streaming_xml:
+                    self.declared_count = self._extract_declared_count()
+                self.consistency_result = verify_batch_consistency(
+                    self.cars,
+                    self.batch_number,
+                    self.declared_count,
+                    candidate_count=self.candidate_record_count,
+                    invalid_count=self.invalid_record_count,
+                )
+
+            self.batch_results = verify_all_batches(self.cars)
             verification_time = time.time() - verification_start
             self.logger.info(
-                f"批次一致性验证结果: {consistency_result['status']} (耗时: {verification_time:.2f}秒)"
+                "批次一致性验证结果: %s (耗时: %.2f秒)",
+                self.consistency_result["status"],
+                verification_time,
             )
-
-            # 计算文件大小和记录数
-            file_size = os.path.getsize(self.doc_path) / (1024 * 1024)  # MB
-            record_count = len(self.cars)
-
-            # 对于大文件或大量记录，禁用详细显示以提高性能
-            is_large_file = file_size > 50 or record_count > 100000  # 50MB或10万条记录
-
-            # 显示文档结构（仅在详细模式下）
-            if self.verbose and not is_large_file:
-                display_doc_content(self.doc_structure)
-            elif self.verbose and is_large_file:
-                self.logger.info("文件较大，跳过显示详细文档结构以提高性能")
-
-            # 显示批次验证结果
-            batch_results = verify_all_batches(self.cars)
-
-            # 使用汇总仪表盘显示（如果配置允许）
-            use_dashboard = self._get_config("output.use_dashboard", True)
-            if use_dashboard:
-                display_summary_dashboard(
-                    self.cars, batch_results, consistency_result, self.doc_path
-                )
-            else:
-                # 使用原有的单独显示方式
-                if (
-                    self._get_config("output.show_key_info_in_compact_mode", True)
-                    or self.verbose
-                ) and batch_results:
-                    display_batch_verification(batch_results)
-
-                # 显示批次一致性验证结果（始终显示，即使在简洁模式下）
-                if (
-                    self._get_config("output.show_key_info_in_compact_mode", True)
-                    or self.verbose
-                ):
-                    display_consistency_result(consistency_result)
-
-            # 处理完成后主动释放资源
-            self.table_extractor.clear_cache()
-            gc.collect()
 
             return self.cars
 
         except Exception as e:
             self.logger.error(f"处理文档失败: {str(e)}")
+            if isinstance(e, ProcessingError):
+                raise
             raise ProcessingError(f"处理文档 {self.doc_path} 失败: {str(e)}")
+        finally:
+            self.table_extractor.clear_cache()
+            if not self._get_config("document.retain_document", False):
+                self.doc = None
+                gc.collect()
 
     def get_memory_usage(self) -> str:
         """
@@ -482,90 +592,8 @@ class DocProcessor:
             self.logger.warning("没有数据可保存")
             return
 
-        # 估计数据大小
-        estimated_size = len(self.cars) * 500  # 假设每条记录约500字节
-        is_large_dataset = estimated_size > 100 * 1024 * 1024  # 100MB
-
-        if is_large_dataset:
-            self.logger.info(f"大数据集 ({len(self.cars)} 条记录), 使用优化处理...")
-
-            # 使用分块处理
-            chunk_size = self._chunk_size
-            with open(output_file, "w", encoding="utf-8-sig") as f:
-                # 写入表头
-                first_batch = self.cars[:100]  # 取前100条确定字段
-                all_fields: Set[str] = set()
-                for car in first_batch:
-                    all_fields.update(car.keys())
-
-                base_columns = [
-                    "batch",
-                    "energytype",
-                    "vmodel",
-                    "category",
-                    "sub_type",
-                    "序号",
-                    "企业名称",
-                    "品牌",
-                    "table_id",
-                    "raw_text",
-                ]
-
-                header_fields = [col for col in base_columns if col in all_fields] + [
-                    col for col in sorted(all_fields) if col not in base_columns
-                ]
-
-                f.write(",".join(header_fields) + "\n")
-
-                # 分块写入数据
-                for i in range(0, len(self.cars), chunk_size):
-                    chunk = self.cars[i : i + chunk_size]
-                    chunk_df = pd.DataFrame(chunk)
-                    chunk_df = chunk_df.reindex(columns=header_fields)
-
-                    if i == 0:
-                        chunk_df.to_csv(
-                            f, index=False, header=False, encoding="utf-8-sig"
-                        )
-                    else:
-                        chunk_df.to_csv(
-                            f, index=False, header=False, encoding="utf-8-sig", mode="a"
-                        )
-
-                    # 释放内存
-                    del chunk_df
-                    gc.collect()
-
-            self.logger.info(f"保存完成, 文件: {output_file}, 记录数: {len(self.cars)}")
-        else:
-            # 原有处理逻辑
-            all_cars_df = pd.DataFrame(self.cars)
-
-            # 优化列顺序设置
-            base_columns = [
-                "batch",
-                "energytype",
-                "vmodel",
-                "category",
-                "sub_type",
-                "序号",
-                "企业名称",
-                "品牌",
-                "table_id",
-                "raw_text",
-            ]
-            all_columns = all_cars_df.columns.tolist()
-            final_columns = [col for col in base_columns if col in all_columns] + [
-                col for col in all_columns if col not in base_columns
-            ]
-
-            # 重新排列列并保存
-            all_cars_df = all_cars_df[final_columns]
-            all_cars_df.to_csv(output_file, index=False, encoding="utf-8-sig")
-
-            self.logger.info(
-                f"保存完成, 文件: {output_file}, 记录数: {len(all_cars_df)}"
-            )
+        write_csv_atomic(self.cars, output_file)
+        self.logger.info("保存完成, 文件: %s, 记录数: %d", output_file, len(self.cars))
 
 
 def process_doc(
@@ -586,32 +614,8 @@ def process_doc(
     Returns:
         车辆信息字典列表
     """
-    try:
-        processor = DocProcessor(doc_path, verbose, config)
-        result = processor.process()
-
-        # 如果提供了输出文件路径，则保存CSV文件
-        if output_file and result:
-            processor.save_to_csv(output_file)
-
-            # 显示批次验证结果
-            batch_results = verify_all_batches(result)
-            if batch_results:
-                display_batch_verification(batch_results)
-
-            # 显示统计信息
-            if verbose and result:
-                from ..batch.validator import calculate_statistics
-
-                stats = calculate_statistics(result)
-                display_statistics(
-                    stats["total_count"],
-                    stats["energy_saving_count"],
-                    stats["new_energy_count"],
-                    output_file,
-                )
-
-        return result
-    except Exception as e:
-        logging.error(f"处理文档 {doc_path} 失败: {str(e)}")
-        return []
+    processor = DocProcessor(doc_path, verbose, config)
+    result = processor.process()
+    if output_file and result:
+        processor.save_to_csv(output_file)
+    return result

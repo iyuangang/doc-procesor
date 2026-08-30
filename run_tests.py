@@ -6,9 +6,9 @@
 """
 
 import argparse
-import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import List, Optional
 
 
@@ -79,25 +79,24 @@ def build_pytest_command(args: argparse.Namespace) -> List[str]:
     Returns:
         pytest命令列表
     """
-    cmd = ["pytest"]
+    cmd = [sys.executable, "-m", "pytest"]
 
-    # 添加测试路径
+    # 添加测试路径；模块筛选优先于测试类型的根目录。
     if args.test_path:
         cmd.append(args.test_path)
+    elif args.module:
+        test_types = (
+            ("unit", "integration") if args.test_type == "all" else (args.test_type,)
+        )
+        module_paths = [
+            Path("tests") / test_type / args.module for test_type in test_types
+        ]
+        existing_paths = [path for path in module_paths if path.exists()]
+        cmd.extend(str(path) for path in existing_paths or module_paths)
     elif args.test_type == "unit":
         cmd.append("tests/unit/")
     elif args.test_type == "integration":
         cmd.append("tests/integration/")
-
-    # 如果指定了模块，添加模块路径
-    if args.module:
-        if args.test_path:
-            # 如果已经指定了测试路径，不重复添加
-            pass
-        elif args.test_type == "all":
-            cmd.append(f"tests/unit/{args.module}/ tests/integration/{args.module}/")
-        else:
-            cmd.append(f"tests/{args.test_type}/{args.module}/")
 
     # 添加详细模式
     if args.verbose:
@@ -105,10 +104,7 @@ def build_pytest_command(args: argparse.Namespace) -> List[str]:
 
     # 添加标记表达式
     if args.markers:
-        cmd.append(f"-m '{args.markers}'")
-
-    # 添加测试覆盖率选项
-    cmd.append("--cov=src")
+        cmd.extend(["-m", args.markers])
 
     # 添加HTML报告
     if args.html_report:
@@ -117,9 +113,6 @@ def build_pytest_command(args: argparse.Namespace) -> List[str]:
     # 添加XML报告
     if args.xml_report:
         cmd.append("--cov-report=xml")
-
-    # 默认添加终端报告
-    cmd.append("--cov-report=term")
 
     # 添加日志级别
     cmd.append(f"--log-cli-level={args.log_level}")
@@ -142,11 +135,11 @@ def run_tests(command: List[str]) -> int:
         命令的退出码
     """
     # 打印要执行的命令
-    cmd_str = " ".join(command)
-    print(f"执行命令: {cmd_str}")
+    cmd_str = subprocess.list2cmdline(command)
+    print(f"执行命令: {cmd_str}", flush=True)
 
     # 执行命令
-    result = subprocess.run(cmd_str, shell=True)
+    result = subprocess.run(command, check=False)
     return result.returncode
 
 

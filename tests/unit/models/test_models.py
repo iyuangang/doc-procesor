@@ -91,6 +91,10 @@ class TestCarInfo:
         assert car.extra_fields["颜色"] == "蓝色"
         assert car.extra_fields["年份"] == 2024
 
+        # 构造模型不能破坏调用方持有的输入字典
+        assert car_dict["vmodel"] == "Model Y"
+        assert car_dict["颜色"] == "蓝色"
+
 
 class TestBatchInfo:
     """测试BatchInfo类"""

@@ -82,21 +82,23 @@ class CarInfo:
         Returns:
             CarInfo对象
         """
+        values = data.copy()
+
         # 提取必填字段
-        vmodel = data.pop("vmodel", "")
-        category = data.pop("category", "")
-        sub_type = data.pop("sub_type", "")
-        energytype = data.pop("energytype", 0)
+        vmodel = values.pop("vmodel", "")
+        category = values.pop("category", "")
+        sub_type = values.pop("sub_type", "")
+        energytype = values.pop("energytype", 0)
 
         # 提取可选字段
-        batch = data.pop("batch", None)
-        company = data.pop("企业名称", None)
-        brand = data.pop("品牌", None)
-        raw_text = data.pop("raw_text", None)
-        table_id = data.pop("table_id", None)
+        batch = values.pop("batch", None)
+        company = values.pop("企业名称", None)
+        brand = values.pop("品牌", None)
+        raw_text = values.pop("raw_text", None)
+        table_id = values.pop("table_id", None)
 
         # 剩余的字段作为额外字段
-        extra_fields = data
+        extra_fields = values
 
         return cls(
             vmodel=vmodel,

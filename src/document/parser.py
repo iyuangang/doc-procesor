@@ -3,13 +3,54 @@
 """
 
 import re
-from typing import List, Dict, Tuple, Any, Optional
+from collections import deque
+from typing import Iterable, List, Dict, Tuple, Any, Optional, Sequence
 
 from docx import Document
 from docx.document import Document as DocxDocument
 
 from ..utils.chinese_numbers import extract_batch_number
 from ..utils.text_processing import clean_text
+
+
+COUNT_PATTERN = re.compile(r"(共计|总计|合计).*?(\d+).*?(款|个|种|辆|台|项)")
+
+
+def extract_declared_count_from_text(text: str) -> Optional[int]:
+    """Extract a declared total from one paragraph of text."""
+    if "总" not in text and "共" not in text and "合计" not in text:
+        return None
+    match = COUNT_PATTERN.search(text)
+    if match is None:
+        return None
+    try:
+        return int(match.group(2))
+    except (ValueError, IndexError):
+        return None
+
+
+def extract_declared_count_from_rows(
+    rows: Iterable[Sequence[str]],
+) -> Optional[int]:
+    """Inspect only the first/last three rows without retaining a large table."""
+    first_rows: List[Sequence[str]] = []
+    last_rows: deque[Sequence[str]] = deque(maxlen=3)
+    for index, row in enumerate(rows):
+        if index < 3:
+            first_rows.append(row)
+        last_rows.append(row)
+
+    rows_to_check = first_rows
+    if list(last_rows) != first_rows:
+        rows_to_check = first_rows + list(last_rows)
+
+    for row in rows_to_check:
+        cells = [str(cell).strip() for cell in row]
+        if any(cell.startswith(("合计", "总计")) for cell in cells):
+            for cell in cells:
+                if cell.isdigit():
+                    return int(cell)
+    return None
 
 
 def extract_doc_content(doc_path: str) -> Tuple[List[str], List[Dict[str, str]]]:
@@ -175,7 +216,10 @@ def get_table_type(
 
 
 def extract_declared_count(
-    doc_path: str, max_paragraphs: int = 30, max_tables: int = 5
+    doc_path: str,
+    max_paragraphs: int = 30,
+    max_tables: int = 5,
+    document: Optional[DocxDocument] = None,
 ) -> Optional[int]:
     """
     从文档中提取批次声明的总记录数
@@ -188,11 +232,8 @@ def extract_declared_count(
     Returns:
         声明的总记录数，如果未找到则返回None
     """
-    # 预编译正则表达式
-    count_pattern = re.compile(r"(共计|总计|合计).*?(\d+).*?(款|个|种|辆|台|项)")
-
     try:
-        doc: DocxDocument = Document(doc_path)
+        doc: DocxDocument = document if document is not None else Document(doc_path)
 
         # 1. 只搜索前N个段落
         paragraphs_to_search = min(max_paragraphs, len(doc.paragraphs))
@@ -202,14 +243,9 @@ def extract_declared_count(
             if not text:
                 continue
 
-            if "总" in text or "共" in text or "合计" in text:
-                match = count_pattern.search(text)
-                if match:
-                    try:
-                        count = int(match.group(2))
-                        return count
-                    except (ValueError, IndexError):
-                        continue
+            count = extract_declared_count_from_text(text)
+            if count is not None:
+                return count
 
         # 2. 只搜索前M个表格
         tables_to_search = min(max_tables, len(doc.tables))
@@ -218,21 +254,11 @@ def extract_declared_count(
             if not table.rows:
                 continue
 
-            # 只检查表格的前3行和后3行，这些位置最可能出现合计信息
-            rows_to_check = []
-            if len(table.rows) > 6:
-                rows_to_check = list(table.rows[:3]) + list(table.rows[-3:])
-            else:
-                rows_to_check = list(table.rows)
-
-            for row in rows_to_check:
-                cells = [cell.text.strip() for cell in row.cells]
-                # 检查是否包含合计相关的内容
-                if any(cell.startswith(("合计", "总计")) for cell in cells):
-                    # 尝试从合计行中获取数值
-                    for cell in cells:
-                        if cell.isdigit():
-                            return int(cell)
+            count = extract_declared_count_from_rows(
+                ([cell.text.strip() for cell in row.cells] for row in table.rows)
+            )
+            if count is not None:
+                return count
 
         return None
 

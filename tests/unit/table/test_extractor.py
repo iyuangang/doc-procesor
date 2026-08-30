@@ -15,6 +15,7 @@ class TestTableExtractor:
         extractor = TableExtractor()
         assert extractor._chunk_size == 1000
         assert extractor._table_cache == {}
+        assert extractor._table_metrics == {}
 
         # 测试自定义chunk_size
         extractor = TableExtractor(chunk_size=500)
@@ -82,24 +83,26 @@ class TestTableExtractor:
         # 创建模拟表格
         mock_table = MagicMock()
 
-        # 创建提取器并替换extract_table_cells_fast方法
+        # 创建提取器并替换流式行迭代方法
         extractor = TableExtractor()
-        extractor.extract_table_cells_fast = MagicMock(
-            return_value=[
-                ["序号", "企业名称", "品牌", "型号", "排量"],
-                ["1", "企业A", "品牌X", "型号M", "1.5L"],
-                ["2", "", "品牌X", "型号N", "2.0L"],
-                ["3", "企业B", "", "型号P", "1.8L"],
-                ["4", "", "", "型号Q", "1.6L"],
-                ["", "合计", "4", "", ""],
-            ]
+        extractor.iter_table_rows = MagicMock(
+            return_value=iter(
+                [
+                    ["序号", "企业名称", "品牌", "型号", "排量"],
+                    ["1", "企业A", "品牌X", "型号M", "1.5L"],
+                    ["2", "", "品牌X", "型号N", "2.0L"],
+                    ["3", "企业B", "", "型号P", "1.8L"],
+                    ["4", "", "", "型号Q", "1.6L"],
+                    ["", "合计", "4", "", ""],
+                ]
+            )
         )
 
         # 测试提取车辆信息
         cars = extractor.extract_car_info(mock_table, 0, "节能型", "轿车", "B001")
 
         # 验证结果
-        assert len(cars) == 5
+        assert len(cars) == 4
 
         # 验证第一条记录
         assert cars[0]["vmodel"] == "型号M"
@@ -128,6 +131,11 @@ class TestTableExtractor:
         # 验证缓存
         assert 0 in extractor._table_cache
         assert extractor._table_cache[0] == cars
+        assert extractor.get_metrics()[1] == {
+            "candidate_count": 5,
+            "valid_count": 4,
+            "invalid_count": 1,
+        }
 
     def test_extract_table_cells_fast_with_exception(self) -> None:
         """测试表格提取异常处理"""
@@ -136,10 +144,23 @@ class TestTableExtractor:
         mock_table._tbl.xpath.side_effect = Exception("测试异常")
 
         extractor = TableExtractor()
-        result = extractor.extract_table_cells_fast(mock_table)
+        with pytest.raises(RuntimeError, match="无法读取表格内容"):
+            extractor.extract_table_cells_fast(mock_table)
 
-        # 验证异常被捕获并返回空列表
-        assert result == []
+    def test_unknown_category_is_not_misclassified(self) -> None:
+        mock_table = MagicMock()
+        extractor = TableExtractor()
+        extractor.iter_table_rows = MagicMock(
+            return_value=iter(
+                [
+                    ["序号", "企业名称", "品牌", "型号"],
+                    ["1", "企业A", "品牌A", "MODEL-A"],
+                ]
+            )
+        )
+        cars = extractor.extract_car_info(mock_table, 0, None, None, "1")
+        assert cars == []
+        assert extractor.get_metrics()[1]["invalid_count"] == 1
 
     def test_clear_cache(self) -> None:
         """测试清除缓存"""
@@ -153,3 +174,4 @@ class TestTableExtractor:
 
         # 验证缓存已清空
         assert extractor._table_cache == {}
+        assert extractor._table_metrics == {}

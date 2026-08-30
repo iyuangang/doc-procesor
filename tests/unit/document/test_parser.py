@@ -9,6 +9,8 @@ from src.document.parser import (
     extract_doc_content,
     get_table_type,
     extract_declared_count,
+    extract_declared_count_from_rows,
+    extract_declared_count_from_text,
 )
 
 
@@ -202,3 +204,10 @@ class TestDocumentParser:
 
         # 验证结果
         assert count == 456
+
+
+def test_declared_count_helpers_scan_text_and_table_edges():
+    assert extract_declared_count_from_text("本批次共计123款车型") == 123
+    assert extract_declared_count_from_text("没有声明数量") is None
+    rows = [["表头", "数量"], ["数据", "1"], ["...", ""], ["合计", "456"]]
+    assert extract_declared_count_from_rows(rows) == 456

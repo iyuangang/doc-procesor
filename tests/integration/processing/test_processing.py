@@ -146,8 +146,8 @@ def test_process_single_file(setup_test_environment: Dict[str, Path]) -> None:
         or "Package not found" in stdout
     )
 
-    # 命令应该仍然成功执行（0返回码）
-    assert return_code == 0
+    # 文档损坏必须返回非零错误码，不能伪装为成功
+    assert return_code != 0
 
     # 验证没有参数解析错误
     assert "Invalid value" not in stderr
@@ -183,18 +183,9 @@ def test_process_directory(setup_test_environment: Dict[str, Path]) -> None:
     # 可能是 KeyError, 文件格式错误，或其他问题
     # 由于输出和错误处理的不确定性，我们放宽断言条件
 
-    # 检查stdout或stderr中是否包含任何处理相关信息
-    combined_output = stdout + stderr
-    assert (
-        "处理目录" in combined_output
-        or "未找到匹配的文件" in combined_output
-        or "错误文件" in combined_output
-        or "处理失败" in combined_output
-        or "文件数" in combined_output
-        or "Got unexpected extra arguments" in combined_output
-    )  # Click错误信息
-
-    # 验证没有命令行参数解析错误，但允许"额外参数"错误
+    # 两个损坏的文档都必须报告失败，且不是参数解析失败
+    assert return_code != 0
+    assert "Error:" in stderr
     assert "Invalid value" not in stderr
     assert "Error: No such option" not in stderr
 

@@ -176,12 +176,8 @@ def test_invalid_config_handling(config_test_environment: Dict[str, Path]) -> No
 
     return_code, stdout, stderr = run_cli_command(args)
 
-    # 应该有配置错误信息
-    assert (
-        "加载配置失败" in stdout
-        or "Invalid JSON" in stderr
-        or "Failed to parse" in stderr
-    )
+    assert return_code != 0
+    assert "Error:" in stderr
 
 
 def test_incomplete_config_fallback(config_test_environment: Dict[str, Path]) -> None:
@@ -237,9 +233,9 @@ def test_invalid_log_config_fallback(config_test_environment: Dict[str, Path]) -
 
     return_code, stdout, stderr = run_cli_command(args)
 
-    # 无效日志配置可能导致警告，但不应完全阻止命令执行
-    # 通常会回退到默认日志配置
-    assert return_code == 0 or "Invalid log config" in stderr
+    # 日志配置安全回退；输入文档本身损坏，因此处理仍应失败。
+    assert return_code != 0
+    assert "Error:" in stderr
 
 
 def test_chunk_size_override(config_test_environment: Dict[str, Path]) -> None:

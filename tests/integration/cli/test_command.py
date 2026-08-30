@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple, Generator, Optional
 
 import pytest
+from docx import Document
 
 
 def run_cli_command(args: List[str]) -> Tuple[int, str, str]:
@@ -38,6 +39,18 @@ def run_cli_command(args: List[str]) -> Tuple[int, str, str]:
     stdout, stderr = proc.communicate()
 
     # 返回结果
+    return proc.returncode, stdout, stderr
+
+
+def run_legacy_script(args: List[str]) -> Tuple[int, str, str]:
+    """Run the documented ``python doc_processor.py`` compatibility form."""
+    proc = subprocess.Popen(
+        [sys.executable, "doc_processor.py", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
+    stdout, stderr = proc.communicate()
     return proc.returncode, stdout, stderr
 
 
@@ -157,3 +170,31 @@ def test_process_with_config(tmp_path: Any) -> None:
     # 验证输出
     assert "Invalid value" not in stderr
     assert "Error: No such option" not in stderr
+
+
+def test_documented_entry_point_processes_real_document(tmp_path: Path) -> None:
+    source = tmp_path / "sample.docx"
+    output_dir = tmp_path / "output"
+    document = Document()
+    document.add_paragraph("第1批")
+    document.add_paragraph("新能源汽车")
+    document.add_paragraph("（一）乘用车")
+    table = document.add_table(rows=2, cols=4)
+    for cell, value in zip(table.rows[0].cells, ["序号", "企业名称", "品牌", "型号"]):
+        cell.text = value
+    for cell, value in zip(
+        table.rows[1].cells, ["1", "测试企业", "测试品牌", "MODEL-1"]
+    ):
+        cell.text = value
+    document.save(source)
+
+    return_code, stdout, stderr = run_legacy_script(
+        ["process", str(source), "--output", str(output_dir), "--classic-display"]
+    )
+
+    assert return_code == 0, stdout + stderr
+    output_file = output_dir / "sample.csv"
+    assert output_file.exists()
+    content = output_file.read_text(encoding="utf-8-sig")
+    assert "MODEL-1" in content
+    assert "新能源" in content
