@@ -29,12 +29,16 @@ def test_process_single_file_uses_core_and_saves_csv(
     source = tmp_path / "sample.docx"
     source.write_bytes(b"placeholder")
     output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    stale_invalid_output = output_dir / "sample_invalid_records.csv"
+    stale_invalid_output.write_text("stale", encoding="utf-8")
     records = [{"vmodel": "MODEL-1", "category": "新能源", "energytype": 1}]
 
     processor = mock_processor_class.return_value
     processor.process.return_value = records
     processor.batch_results = {"1": {"total": 1, "table_counts": {1: 1}}}
     processor.consistency_result = {"status": "match"}
+    processor.invalid_records = []
 
     result = process_single_file(
         str(source),
@@ -46,6 +50,39 @@ def test_process_single_file_uses_core_and_saves_csv(
     assert result == records
     processor.process.assert_called_once_with()
     processor.save_to_csv.assert_called_once_with(str(output_dir / "sample.csv"))
+    assert not stale_invalid_output.exists()
+
+
+@patch("src.application._render_result")
+@patch("src.application.write_csv_atomic")
+@patch("src.application.DocProcessor")
+def test_process_single_file_exports_invalid_rows(
+    mock_processor_class: MagicMock,
+    mock_write_csv: MagicMock,
+    mock_render: MagicMock,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "sample.docx"
+    source.write_bytes(b"placeholder")
+    output_dir = tmp_path / "output"
+    invalid = {
+        "source_file": "sample.docx",
+        "table_id": 1,
+        "row_number": 3,
+        "reason": "缺少必要字段: vmodel",
+    }
+    processor = mock_processor_class.return_value
+    processor.process.return_value = [{"vmodel": "MODEL-1"}]
+    processor.invalid_records = [invalid]
+    processor.batch_results = {"1": {"total": 1}}
+    processor.consistency_result = {"status": "internal_mismatch"}
+
+    process_single_file(str(source), str(output_dir))
+
+    invalid_output = output_dir / "sample_invalid_records.csv"
+    mock_write_csv.assert_called_once_with([invalid], str(invalid_output))
+    assert processor.consistency_result["invalid_output_file"] == str(invalid_output)
+    mock_render.assert_called_once()
 
 
 def test_process_single_file_rejects_missing_file(tmp_path: Path) -> None:
@@ -75,6 +112,7 @@ def test_process_directory_reports_partial_failures(
     processor = MagicMock()
     processor.candidate_record_count = 1
     processor.invalid_record_count = 0
+    processor.invalid_records = []
     record = {
         "vmodel": "MODEL-1",
         "category": "新能源",
@@ -96,6 +134,58 @@ def test_process_directory_reports_partial_failures(
     assert result["total_records"] == 1
     mock_write_csv.assert_called_once()
     mock_render.assert_called_once()
+
+
+@patch("src.application._render_result")
+@patch("src.application.write_csv_atomic")
+@patch("src.application._process_file")
+def test_process_directory_exports_and_displays_invalid_record_details(
+    mock_process_file: MagicMock,
+    mock_write_csv: MagicMock,
+    mock_render: MagicMock,
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    source = input_dir / "sample.docx"
+    source.write_bytes(b"placeholder")
+
+    invalid = {
+        "source_file": "sample.docx",
+        "table_id": 1,
+        "row_number": 3,
+        "reason": "缺少必要字段: vmodel",
+    }
+    processor = MagicMock()
+    processor.candidate_record_count = 2
+    processor.invalid_record_count = 1
+    processor.invalid_records = [invalid]
+    record = {
+        "vmodel": "MODEL-1",
+        "category": "新能源",
+        "energytype": 1,
+        "batch": "1",
+    }
+    mock_process_file.return_value = ProcessedFile(
+        source, output_dir / "sample.csv", processor, [record]
+    )
+
+    result = process_directory(str(input_dir), str(output_dir))
+
+    assert result["invalid_record_count"] == 1
+    assert result["invalid_records"] == [invalid]
+    assert result["invalid_output_file"] == str(
+        output_dir / "combined_results_invalid_records.csv"
+    )
+    invalid_write = mock_write_csv.call_args_list[1]
+    assert invalid_write.args == (
+        [invalid],
+        str(output_dir / "combined_results_invalid_records.csv"),
+    )
+    rendered_consistency = mock_render.call_args.args[2]
+    assert rendered_consistency["invalid_records"] == [invalid]
+    assert rendered_consistency["invalid_output_file"] == result["invalid_output_file"]
 
 
 def test_process_directory_with_no_matches(tmp_path: Path) -> None:

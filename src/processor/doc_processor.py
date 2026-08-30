@@ -74,6 +74,7 @@ class DocProcessor:
         self.batch_results: Dict[str, Any] = {}
         self.candidate_record_count = 0
         self.invalid_record_count = 0
+        self.invalid_records: List[Dict[str, Any]] = []
 
         # 从配置加载设置
         self._chunk_size = self._get_config("performance.chunk_size", 1000)
@@ -527,6 +528,15 @@ class DocProcessor:
             self.invalid_record_count = sum(
                 item["invalid_count"] for item in metrics.values()
             )
+            source_path = os.path.abspath(self.doc_path)
+            self.invalid_records = [
+                {
+                    "source_file": os.path.basename(source_path),
+                    "source_path": source_path,
+                    **record,
+                }
+                for record in self.table_extractor.get_invalid_records()
+            ]
 
             verification_start = time.time()
             if self._skip_verification:
@@ -548,6 +558,10 @@ class DocProcessor:
                     candidate_count=self.candidate_record_count,
                     invalid_count=self.invalid_record_count,
                 )
+
+            self.consistency_result["invalid_records"] = [
+                record.copy() for record in self.invalid_records
+            ]
 
             self.batch_results = verify_all_batches(self.cars)
             verification_time = time.time() - verification_start

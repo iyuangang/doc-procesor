@@ -10,7 +10,6 @@ from pathlib import Path
 import time
 from typing import Dict, Any, List, Generator
 
-import pandas as pd
 from rich.console import Console
 
 from src.ui.console import (
@@ -279,6 +278,40 @@ class TestDashboard:
         assert "实际记录: 15" in output
         assert "输出文件:" in output and "output.csv" in output
 
+    @pytest.mark.parametrize(("width", "max_lines"), [(72, 32), (140, 22)])
+    def test_dashboard_is_compact_and_adapts_to_terminal_width(
+        self,
+        width,
+        max_lines,
+        sample_car_data,
+        sample_batch_results,
+        sample_consistency_result,
+    ):
+        output_stream = io.StringIO()
+        adaptive_console = Console(
+            file=output_stream,
+            width=width,
+            height=80,
+            color_system=None,
+        )
+
+        with (
+            patch("src.ui.console.console", adaptive_console),
+            patch("time.strftime", return_value="2025-05-23 16:00:00"),
+        ):
+            display_summary_dashboard(
+                sample_car_data,
+                sample_batch_results,
+                sample_consistency_result,
+                "output.csv",
+            )
+
+        output = output_stream.getvalue()
+        assert len(output.splitlines()) <= max_lines
+        assert "车辆类型分布" in output
+        assert "批次分布图表" in output
+        assert "使用 -v" not in output
+
     def test_display_summary_dashboard_many_batches(self, mock_console_output):
         """测试多批次情况下的仪表盘显示"""
         # 准备大量批次数据
@@ -361,6 +394,20 @@ class TestDashboard:
             "actual_count": 1,
             "declared_count": 2,
             "difference": 1,
+            "invalid_count": 1,
+            "invalid_output_file": "output/sample_invalid_records.csv",
+            "invalid_records": [
+                {
+                    "source_file": "sample.docx",
+                    "batch": "1",
+                    "table_id": 2,
+                    "row_number": 17,
+                    "序号": "16",
+                    "vmodel": "",
+                    "企业名称": "测试企业",
+                    "reason": "缺少必要字段: vmodel",
+                }
+            ],
         }
 
         # 调用函数
@@ -376,6 +423,31 @@ class TestDashboard:
         assert "批次: 第1批" in output
         assert "实际记录: 1" in output
         assert "期望记录: 2" in output
+        assert "无效记录明细 · 1 条" in output
+        assert "sample.docx" in output
+        assert "表2 / 行17" in output
+        assert "型号缺失" in output
+        assert "缺少必要字段: vmodel" in output
+        assert "sample_invalid_records.csv" in output
+
+    def test_dashboard_warns_when_invalid_details_are_unavailable(
+        self, mock_console_output
+    ):
+        display_summary_dashboard(
+            [],
+            {},
+            {
+                "status": "internal_mismatch",
+                "actual_count": 0,
+                "candidate_count": 1,
+                "invalid_count": 1,
+            },
+            "output.csv",
+        )
+
+        output = mock_console_output.getvalue()
+        assert "无效记录明细 · 1 条" in output
+        assert "请重新处理源文档" in output
 
 
 class TestDisplayDocContent:

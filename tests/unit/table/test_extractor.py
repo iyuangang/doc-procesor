@@ -136,6 +136,12 @@ class TestTableExtractor:
             "valid_count": 4,
             "invalid_count": 1,
         }
+        invalid = extractor.get_invalid_records()
+        assert len(invalid) == 1
+        assert invalid[0]["table_id"] == 1
+        assert invalid[0]["row_number"] == 6
+        assert invalid[0]["reason"] == "合计行"
+        assert "合计" in invalid[0]["raw_text"]
 
     def test_extract_table_cells_fast_with_exception(self) -> None:
         """测试表格提取异常处理"""
@@ -161,6 +167,31 @@ class TestTableExtractor:
         cars = extractor.extract_car_info(mock_table, 0, None, None, "1")
         assert cars == []
         assert extractor.get_metrics()[1]["invalid_count"] == 1
+        assert (
+            extractor.get_invalid_records()[0]["reason"] == "缺少必要字段: energytype"
+        )
+
+    def test_secondary_header_row_is_not_counted_as_invalid_record(self) -> None:
+        extractor = TableExtractor()
+        cars = extractor.extract_car_info_rows(
+            [
+                ["序号", "企业名称", "车辆型号", "变速器", "整备质量"],
+                ["", "", "", "型式", "档位数"],
+                ["1", "测试企业", "MODEL-A", "DCT", "1500"],
+            ],
+            table_index=0,
+            category="节能型",
+            sub_type="乘用车",
+            batch_number="65",
+        )
+
+        assert [car["vmodel"] for car in cars] == ["MODEL-A"]
+        assert extractor.get_metrics()[1] == {
+            "candidate_count": 1,
+            "valid_count": 1,
+            "invalid_count": 0,
+        }
+        assert extractor.get_invalid_records() == []
 
     def test_clear_cache(self) -> None:
         """测试清除缓存"""
@@ -168,6 +199,7 @@ class TestTableExtractor:
 
         # 手动添加一些缓存数据
         extractor._table_cache = {0: [{"vmodel": "型号A"}], 1: [{"vmodel": "型号B"}]}
+        extractor._invalid_records = [{"reason": "测试"}]
 
         # 清除缓存
         extractor.clear_cache()
@@ -175,3 +207,4 @@ class TestTableExtractor:
         # 验证缓存已清空
         assert extractor._table_cache == {}
         assert extractor._table_metrics == {}
+        assert extractor.get_invalid_records() == []

@@ -6,7 +6,7 @@ import textwrap
 import time
 from typing import Dict, Any, List, Set, Optional, Tuple
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.table import Table
 from rich.panel import Panel
 from rich.progress import (
@@ -18,8 +18,6 @@ from rich.progress import (
 )
 from rich.text import Text
 from rich.tree import Tree
-from rich.layout import Layout
-from rich.columns import Columns
 from rich import box
 
 from ..models.document_node import DocumentNode, DocumentStructure
@@ -485,33 +483,42 @@ def generate_ascii_bar_chart(
     Returns:
         包装在Panel中的图表
     """
-    # 确定最大值和标签长度
     max_value = max(data.values()) if data else 0
-    max_label_length = max(len(label) for label in data.keys()) if data else 0
 
     if max_value == 0:
         return Panel(
-            f"[yellow]没有数据可显示[/yellow]", title=title, border_style="blue"
+            Text("没有数据可显示", style="yellow"),
+            title=title,
+            border_style="cyan",
+            box=box.ROUNDED,
         )
 
-    # 生成柱状图
-    chart_lines = []
-    chart_lines.append(f"[bold cyan]{title}[/bold cyan]")
-    chart_lines.append("")
+    total = sum(data.values())
+    chart = Table.grid(expand=True, padding=(0, 1))
+    chart.add_column(no_wrap=True)
+    chart.add_column(ratio=1)
+    chart.add_column(justify="right", no_wrap=True)
+    bar_styles = ("bright_cyan", "bright_blue", "green", "magenta", "yellow")
 
-    for label, value in sorted(data.items(), key=lambda x: x[1], reverse=True):
-        # 计算柱长度
-        bar_length = int((value / max_value) * width)
-        bar = "█" * bar_length
-
-        # 格式化输出
-        percentage = (value / sum(data.values())) * 100
-        chart_lines.append(
-            f"{label.ljust(max_label_length)} │ {bar} {value} ({percentage:.1f}%)"
+    for index, (label, value) in enumerate(
+        sorted(data.items(), key=lambda item: item[1], reverse=True)
+    ):
+        bar_length = max(1, round((value / max_value) * width)) if value else 0
+        percentage = value / total * 100 if total else 0
+        chart.add_row(
+            Text(str(label), style="bold"),
+            Text("█" * bar_length, style=bar_styles[index % len(bar_styles)]),
+            Text(f"{value:,}  {percentage:.1f}%", style="bold white"),
         )
 
-    chart_text = "\n".join(chart_lines)
-    return Panel(chart_text, border_style="blue", box=box.ROUNDED)
+    return Panel(
+        chart,
+        title=title,
+        title_align="left",
+        border_style="cyan",
+        box=box.ROUNDED,
+        padding=(0, 1),
+    )
 
 
 def generate_spark_line(data: List[int], title: str, width: int = 40) -> Panel:
@@ -569,6 +576,105 @@ def generate_spark_line(data: List[int], title: str, width: int = 40) -> Panel:
     return Panel(chart_text, border_style="blue", box=box.ROUNDED)
 
 
+def _build_invalid_records_panel(result: Dict[str, Any]) -> Optional[Panel]:
+    """Build a compact, actionable view of rejected candidate rows."""
+    records_value = result.get("invalid_records", [])
+    invalid_records = records_value if isinstance(records_value, list) else []
+    count_value = result.get("invalid_count", len(invalid_records))
+    try:
+        invalid_count = int(count_value)
+    except (TypeError, ValueError):
+        invalid_count = len(invalid_records)
+    if invalid_count <= 0 and not invalid_records:
+        return None
+
+    details: List[Any] = []
+    display_limit = 8
+    if invalid_records:
+        detail_table = Table(
+            show_header=True,
+            header_style="bold red",
+            box=box.SIMPLE_HEAD,
+            expand=True,
+            padding=(0, 1),
+        )
+        if console.width >= 100:
+            detail_table.add_column("来源", ratio=2, overflow="fold")
+            detail_table.add_column("位置", ratio=2, overflow="fold")
+            detail_table.add_column("记录", ratio=3, overflow="fold")
+            detail_table.add_column("失败原因", ratio=3, style="red", overflow="fold")
+        else:
+            detail_table.add_column("位置", ratio=2, overflow="fold")
+            detail_table.add_column("记录 / 失败原因", ratio=3, overflow="fold")
+
+        for record in invalid_records[:display_limit]:
+            source_file = str(record.get("source_file") or "未知文档")
+            batch = str(record.get("batch") or "未知")
+            table_id = str(record.get("table_id") or "未知")
+            row_number = str(record.get("row_number") or "未知")
+            location = f"第{batch}批 / 表{table_id} / 行{row_number}"
+            sequence = str(record.get("序号") or "-")
+            model = str(record.get("vmodel") or "型号缺失")
+            company = str(record.get("企业名称") or "企业未知")
+            reason = str(record.get("reason") or "未通过数据验证")
+            record_text = Text.assemble(
+                (f"{sequence} · {model}", "bold white"),
+                (f"\n{company}", "dim"),
+            )
+            if console.width >= 100:
+                detail_table.add_row(
+                    Text(source_file, style="cyan"),
+                    Text(location),
+                    record_text,
+                    Text(reason, style="red"),
+                )
+            else:
+                compact_detail = Text.assemble(
+                    record_text,
+                    (f"\n{reason}", "red"),
+                )
+                detail_table.add_row(
+                    Text(f"{source_file}\n{location}", style="cyan"),
+                    compact_detail,
+                )
+        details.append(detail_table)
+    else:
+        details.append(
+            Text(
+                "检测到无效记录，但旧结果中没有行级明细；请重新处理源文档以生成定位信息。",
+                style="yellow",
+            )
+        )
+
+    hidden_count = max(0, len(invalid_records) - display_limit)
+    if hidden_count:
+        details.append(Text(f"另有 {hidden_count:,} 条未展开。", style="dim"))
+    invalid_output = result.get("invalid_output_file")
+    if invalid_output:
+        details.append(
+            Text.assemble(
+                ("完整明细: ", "dim"),
+                (str(invalid_output), "bright_red"),
+            )
+        )
+
+    return Panel(
+        Group(*details),
+        title=f"无效记录明细 · {invalid_count:,} 条",
+        title_align="left",
+        border_style="red",
+        box=box.ROUNDED,
+        padding=(0, 1),
+    )
+
+
+def display_invalid_records(result: Dict[str, Any]) -> None:
+    """Display rejected candidate rows for the classic output mode."""
+    panel = _build_invalid_records_panel(result)
+    if panel is not None:
+        console.print(panel)
+
+
 def display_summary_dashboard(
     cars_data: List[Dict[str, Any]],
     batch_results: Dict[str, Any],
@@ -586,132 +692,94 @@ def display_summary_dashboard(
     """
     from ..batch.validator import calculate_statistics
 
-    # 计算统计信息
     stats = calculate_statistics(cars_data)
     total_count = stats["total_count"]
     energy_saving_count = stats["energy_saving_count"]
     new_energy_count = stats["new_energy_count"]
-
-    # 创建车辆类型分布图
-    vehicle_type_data = {
-        "节能型汽车": energy_saving_count,
-        "新能源汽车": new_energy_count,
-    }
-    type_chart = generate_ascii_bar_chart(vehicle_type_data, "车辆类型分布")
-
-    # 创建布局
-    layout = Layout(name="dashboard")
-    layout.split(
-        Layout(name="header", size=3),
-        Layout(name="main", ratio=1),
-        Layout(name="footer", size=3),
-    )
-
-    layout["main"].split_row(
-        Layout(name="left", ratio=1),
-        Layout(name="right", ratio=2),  # 给右侧更多空间
-    )
-
-    # 创建标题
-    title_text = Text("📊 车辆数据处理结果汇总", style="bold white on blue")
-    title_text = Text.assemble(
-        title_text, Text(f" | 共处理 {total_count} 条记录", style="bold white")
-    )
-
-    # 创建统计表格
-    stats_table = Table(
-        title="数据统计",
-        title_style="bold cyan",
-        show_header=True,
-        header_style="bold green",
-        border_style="blue",
-        box=box.ROUNDED,
-    )
-
-    # 添加列
-    stats_table.add_column("类型", style="cyan")
-    stats_table.add_column("数量", justify="right", style="green")
-    stats_table.add_column("占比", justify="right", style="yellow")
-
-    # 计算百分比
     energy_saving_percent = (
         energy_saving_count / total_count * 100 if total_count > 0 else 0
     )
     new_energy_percent = new_energy_count / total_count * 100 if total_count > 0 else 0
-
-    # 添加行
-    stats_table.add_row(
-        "🚗 节能型汽车", f"{energy_saving_count:,}", f"{energy_saving_percent:.1f}%"
+    batch_counts = stats.get("batch_counts", {})
+    sorted_batches = sorted(
+        batch_counts.items(),
+        key=lambda item: (
+            (
+                0,
+                int(str(item[0])),
+            )
+            if str(item[0]).isdigit()
+            else (1, str(item[0]))
+        ),
     )
-    stats_table.add_row(
-        "⚡ 新能源汽车", f"{new_energy_count:,}", f"{new_energy_percent:.1f}%"
-    )
-    stats_table.add_row("📝 总记录数", f"{total_count:,}", "100%")
+    batch_count = len(batch_counts)
+    is_wide = console.width >= 100
 
-    # 创建批次分布表格
-    batch_count_table = Table(
-        title="批次分布",
-        show_header=True,
-        header_style="bold green",
-        title_style="bold cyan",
+    title_text = Text.assemble(
+        ("车辆数据处理结果汇总", "bold bright_cyan"),
+        ("  ·  ", "dim"),
+        ("共处理 ", "dim white"),
+        (f"{total_count:,}", "bold white"),
+        (" 条记录", "dim white"),
+    )
+    header_panel = Panel(
+        title_text,
+        border_style="bright_blue",
+        box=box.ROUNDED,
+        padding=(0, 1),
+    )
+
+    def metric(label: str, value: str, detail: str, style: str) -> Group:
+        value_text = Text(value, style=f"bold {style}")
+        if detail:
+            value_text.append(f"  {detail}", style="dim")
+        return Group(Text(label, style="dim"), value_text)
+
+    metrics = [
+        metric("总记录", f"{total_count:,}", "有效", "white"),
+        metric(
+            "新能源汽车",
+            f"{new_energy_count:,}",
+            f"{new_energy_percent:.1f}%",
+            "bright_cyan",
+        ),
+        metric(
+            "节能型汽车",
+            f"{energy_saving_count:,}",
+            f"{energy_saving_percent:.1f}%",
+            "green",
+        ),
+        metric("批次", f"{batch_count:,}", "个", "yellow"),
+    ]
+    metrics_grid = Table.grid(expand=True, padding=(0, 1))
+    if is_wide:
+        for _ in range(4):
+            metrics_grid.add_column(ratio=1)
+        metrics_grid.add_row(*metrics)
+    else:
+        metrics_grid.add_column(ratio=1)
+        metrics_grid.add_column(ratio=1)
+        metrics_grid.add_row(*metrics[:2])
+        metrics_grid.add_row(*metrics[2:])
+    metrics_panel = Panel(
+        metrics_grid,
+        title="数据统计",
+        title_align="left",
         border_style="blue",
         box=box.ROUNDED,
+        padding=(0, 1),
     )
 
-    batch_count_table.add_column("批次", style="cyan")
-    batch_count_table.add_column("数量", justify="right", style="green")
-    batch_count_table.add_column("占比", justify="right", style="yellow")
-
-    # 添加批次数据
-    batch_counts = stats.get("batch_counts", {})
-    sorted_batches = sorted(batch_counts.items())
-
-    # 决定显示多少批次（基于可用空间）
-    display_count = min(20, len(sorted_batches))  # 默认最多显示20个批次
-
-    # 为批次分布图准备数据
-    batch_chart_data: Dict[str, int] = {}
-
-    for batch, count in sorted_batches[:display_count]:
-        percentage = (count / total_count) * 100
-        batch_count_table.add_row(f"第{batch}批", f"{count:,}", f"{percentage:.1f}%")
-
-        # 只取前10个批次用于图表显示
-        if len(batch_chart_data) < 10:
-            batch_chart_data[f"第{batch}批"] = count
-
-    if len(batch_counts) > display_count:
-        remaining_count = sum(count for _, count in sorted_batches[display_count:])
-        remaining_percentage = (remaining_count / total_count) * 100
-        batch_count_table.add_row(
-            f"其他批次 (共{len(batch_counts) - display_count}个)",
-            f"{remaining_count:,}",
-            f"{remaining_percentage:.1f}%",
-        )
-
-        # 如果批次太多，添加"其他"类别到图表
-        if len(sorted_batches) > 10:
-            other_count = sum(count for _, count in sorted_batches[10:])
-            batch_chart_data["其他批次"] = other_count
-
-    # 添加合计行
-    batch_count_table.add_row(
-        "[bold]合计[/bold]", f"[bold]{total_count}[/bold]", f"[bold]100%[/bold]"
-    )
-
-    # 创建批次分布图
-    batch_chart = generate_ascii_bar_chart(batch_chart_data, "批次分布图表")
-
-    # 创建一致性状态面板，同时包含输出信息
-    if consistency_result["status"] in ["match", "internal_match"]:
+    status = consistency_result.get("status", "unknown")
+    if status in ["match", "internal_match"]:
         status_style = "green"
         status_icon = "✅"
         status_text = "数据一致"
-    elif consistency_result["status"] in ["mismatch", "internal_mismatch"]:
+    elif status in ["mismatch", "internal_mismatch"]:
         status_style = "red"
         status_icon = "❌"
         status_text = "数据不一致"
-    elif consistency_result["status"] == "skipped":
+    elif status == "skipped":
         status_style = "blue"
         status_icon = "ℹ️"
         status_text = "已跳过验证"
@@ -720,66 +788,106 @@ def display_summary_dashboard(
         status_icon = "⚠️"
         status_text = "未知状态"
 
-    # 确定批次显示信息
-    batch_counts = stats.get("batch_counts", {})
-    batch_count = len(batch_counts)
-
-    # 批次信息显示
     if consistency_result.get("multiple_batches", False):
-        # 使用一致性结果中的批次数量（如果可用）
         count = consistency_result.get("batch_count", batch_count)
         batch_display = f"共{count}批"
     elif batch_count > 1:
-        # 多批次情况，显示批次总数
         batch_display = f"共{batch_count}批"
     else:
-        # 单批次情况，显示批次号
         batch_display = f"第{consistency_result.get('batch', '未知')}批"
+    expected_count = consistency_result.get("declared_count")
+    if expected_count is None:
+        expected_count = consistency_result.get("candidate_count")
 
-    # 合并一致性检查和输出信息到一个面板
-    info_panel = Panel(
-        f"[{status_style}]{status_icon} 一致性检查: {status_text}[/{status_style}]\n"
-        f"批次: {batch_display}\n"
-        f"实际记录: {consistency_result.get('actual_count', '未知')}\n"
-        f"期望记录: {consistency_result.get('declared_count', consistency_result.get('processed_count', '未知'))}\n\n"
-        f"[blue]📂 输出文件:[/blue] {output_file}\n"
-        f"[blue]🕒 处理完成时间:[/blue] {time.strftime('%Y-%m-%d %H:%M:%S')}",
-        title="处理信息",
-        border_style="blue",
-        box=box.ROUNDED,
+    def format_count(value: Any) -> str:
+        return f"{value:,}" if isinstance(value, int) else str(value)
+
+    record_text = Text()
+    record_text.append("批次: ", style="dim")
+    record_text.append(batch_display, style="cyan")
+    record_text.append("\n实际记录: ", style="dim")
+    record_text.append(format_count(consistency_result.get("actual_count", "未知")))
+    record_text.append("  ·  期望记录: ", style="dim")
+    record_text.append(
+        format_count(expected_count if expected_count is not None else "未提供")
     )
+    invalid_count = consistency_result.get("invalid_count")
+    if invalid_count:
+        record_text.append("  ·  无效记录: ", style="dim")
+        record_text.append(format_count(invalid_count), style="red")
 
-    # 组装左侧布局
-    left_content = Layout()
-    left_content.split(
-        Layout(stats_table, name="stats", ratio=1),
-        Layout(type_chart, name="chart", ratio=1),
-        Layout(info_panel, name="info", ratio=1),
+    output_text = Text()
+    output_text.append("输出文件: ", style="dim")
+    output_text.append(output_file, style="bright_blue")
+    output_text.append("\n完成时间: ", style="dim")
+    output_text.append(time.strftime("%Y-%m-%d %H:%M:%S"), style="dim")
+    status_line = Text(
+        f"{status_icon} 一致性检查: {status_text}",
+        style=f"bold {status_style}",
     )
-
-    # 组装右侧布局 - 根据批次数量决定布局
-    right_content = Layout()
-    if len(batch_counts) > 5:  # 如果批次数量较多，添加图表
-        right_content.split(
-            Layout(batch_count_table, name="batch_table", ratio=2),
-            Layout(batch_chart, name="batch_chart", ratio=1),
-        )
-        layout["right"].update(right_content)
+    info_content: Any
+    if is_wide:
+        info_content = Table.grid(expand=True, padding=(0, 2))
+        info_content.add_column(ratio=3)
+        info_content.add_column(ratio=2)
+        info_content.add_row(Group(status_line, record_text), output_text)
     else:
-        # 批次少时直接显示表格
-        layout["right"].update(batch_count_table)
-
-    # 组装布局
-    layout["header"].update(Panel(title_text, border_style="blue", box=box.ROUNDED))
-    layout["left"].update(left_content)
-
-    footer_text = Text(
-        "💡 使用 -v 参数查看更详细的信息 | 🔍 对比过往批次 | 📥 查看更多统计数据",
-        style="bold white on blue",
+        info_content = Group(status_line, record_text, output_text)
+    info_panel = Panel(
+        info_content,
+        title="处理信息",
+        title_align="left",
+        border_style=status_style,
+        box=box.ROUNDED,
+        padding=(0, 1),
     )
-    layout["footer"].update(Panel(footer_text, border_style="blue", box=box.ROUNDED))
+    invalid_panel = _build_invalid_records_panel(consistency_result)
 
-    # 显示布局
+    half_width = console.width // 2 if is_wide else console.width
+    type_chart_width = max(8, min(36, half_width - 28))
+    vehicle_type_data = {
+        "新能源汽车": new_energy_count,
+        "节能型汽车": energy_saving_count,
+    }
+    unclassified_count = total_count - new_energy_count - energy_saving_count
+    if unclassified_count > 0:
+        vehicle_type_data["其他/未识别"] = unclassified_count
+    type_chart = generate_ascii_bar_chart(
+        vehicle_type_data,
+        "车辆类型分布",
+        type_chart_width,
+    )
+
+    batch_chart_data: Dict[str, int] = {
+        f"第{batch}批": count for batch, count in sorted_batches[:8]
+    }
+    if len(sorted_batches) > 8:
+        batch_chart_data["其他批次"] = sum(count for _, count in sorted_batches[8:])
+    charts_share_row = is_wide and batch_count <= 2
+    batch_available_width = half_width if charts_share_row else console.width
+    batch_chart_width = max(8, min(56, batch_available_width - 28))
+    batch_chart = generate_ascii_bar_chart(
+        batch_chart_data, "批次分布图表", batch_chart_width
+    )
+
+    renderables: List[Any] = [
+        header_panel,
+        Text(""),
+        metrics_panel,
+        info_panel,
+    ]
+    if invalid_panel is not None:
+        renderables.append(invalid_panel)
+    renderables.append(Text(""))
+    if charts_share_row:
+        distribution = Table.grid(expand=True, padding=(0, 1))
+        distribution.add_column(ratio=1)
+        distribution.add_column(ratio=1)
+        distribution.add_row(type_chart, batch_chart)
+        renderables.append(distribution)
+    else:
+        renderables.extend([type_chart, batch_chart])
+
     console.print()
-    console.print(layout)
+    console.print(Group(*renderables))
     console.print()

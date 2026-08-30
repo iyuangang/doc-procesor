@@ -127,6 +127,15 @@ def test_process_tracks_candidates_and_invalid_rows(tmp_path: Path) -> None:
     assert processor.invalid_record_count == 1
     assert processor.consistency_result["status"] == "internal_mismatch"
     assert processor.consistency_result["difference"] == 1
+    assert len(processor.invalid_records) == 1
+    invalid = processor.invalid_records[0]
+    assert invalid["source_file"] == "sample.docx"
+    assert invalid["table_id"] == 1
+    assert invalid["row_number"] == 3
+    assert invalid["序号"] == "2"
+    assert invalid["企业名称"] == "企业B"
+    assert invalid["reason"] == "缺少必要字段: vmodel"
+    assert processor.consistency_result["invalid_records"] == processor.invalid_records
 
 
 def test_skip_verification_is_honored(tmp_path: Path) -> None:

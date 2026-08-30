@@ -11,6 +11,14 @@ from ..utils.text_processing import clean_text
 from ..utils.validation import process_car_info, validate_car_info
 
 
+class _NormalizedRow(list[str]):
+    """A normalized row retaining its one-based source table row number."""
+
+    def __init__(self, values: Iterable[str], source_row_number: int) -> None:
+        super().__init__(values)
+        self.source_row_number = source_row_number
+
+
 class TableExtractor:
     """表格数据提取器，用于从文档表格中提取数据"""
 
@@ -25,6 +33,7 @@ class TableExtractor:
         self._chunk_size = chunk_size
         self._table_cache: Dict[int, List[Dict[str, Any]]] = {}
         self._table_metrics: Dict[int, Dict[str, int]] = {}
+        self._invalid_records: List[Dict[str, Any]] = []
 
     def extract_table_cells_fast(self, table: Table) -> List[List[str]]:
         """
@@ -62,8 +71,10 @@ class TableExtractor:
         expected_columns = 0
         company_index: Optional[int] = None
         brand_index: Optional[int] = None
+        sequence_index: Optional[int] = None
+        model_index: Optional[int] = None
 
-        for cells in raw_rows:
+        for source_row_number, cells in enumerate(raw_rows, 1):
             if not header_processed:
                 expected_columns = len(cells)
                 normalized = [clean_text(value) for value in cells]
@@ -83,8 +94,30 @@ class TableExtractor:
                     ),
                     None,
                 )
+                sequence_index = next(
+                    (
+                        index
+                        for index, value in enumerate(normalized)
+                        if value in {"序号", "编号"}
+                    ),
+                    None,
+                )
+                model_index = next(
+                    (
+                        index
+                        for index, value in enumerate(normalized)
+                        if value in {"型号", "车辆型号", "产品型号"}
+                    ),
+                    None,
+                )
                 header_processed = True
-                yield cells
+                yield _NormalizedRow(cells, source_row_number)
+                continue
+
+            if self._is_continuation_header(
+                cells, sequence_index, company_index, model_index
+            ):
+                self.logger.debug("跳过表格第 %d 行续表头", source_row_number)
                 continue
 
             if len(cells) > expected_columns and expected_columns > 0:
@@ -107,7 +140,42 @@ class TableExtractor:
                 last_company = processed_row[company_index]
             if brand_index is not None and processed_row[brand_index]:
                 last_brand = processed_row[brand_index]
-            yield processed_row
+            yield _NormalizedRow(processed_row, source_row_number)
+
+    @staticmethod
+    def _is_continuation_header(
+        cells: List[str],
+        sequence_index: Optional[int],
+        company_index: Optional[int],
+        model_index: Optional[int],
+    ) -> bool:
+        """Identify a secondary header row before it becomes a candidate record."""
+        identity_indexes = (sequence_index, company_index, model_index)
+        if any(
+            index is not None and index < len(cells) and clean_text(cells[index])
+            for index in identity_indexes
+        ):
+            return False
+
+        values = [clean_text(cell) for cell in cells if clean_text(cell)]
+        if not values:
+            return False
+        header_markers = {
+            "型式",
+            "档位数",
+            "发动机型号",
+            "排量",
+            "额定功率",
+            "最大净功率",
+            "单位",
+            "备注",
+        }
+        return any(value in header_markers for value in values) and all(
+            value in header_markers
+            or value.startswith(("(", "（"))
+            or value.endswith((")", "）"))
+            for value in values
+        )
 
     def _process_merged_headers(self, headers: List[str]) -> List[str]:
         """
@@ -289,6 +357,7 @@ class TableExtractor:
         total_rows = 0
         for row_idx, cells in enumerate(row_iterator, 1):
             total_rows += 1
+            source_row_number = getattr(cells, "source_row_number", row_idx + 1)
             if not any(str(cell).strip() for cell in cells):
                 continue
 
@@ -315,6 +384,21 @@ class TableExtractor:
             if is_valid and validated is not None:
                 table_cars.append(validated)
             else:
+                self._invalid_records.append(
+                    {
+                        "batch": batch_number or "",
+                        "category": normalized_category,
+                        "sub_type": sub_type or "未知",
+                        "table_id": table_index + 1,
+                        "row_number": source_row_number,
+                        "序号": car_info.get("序号", ""),
+                        "vmodel": car_info.get("vmodel", ""),
+                        "企业名称": car_info.get("企业名称", ""),
+                        "品牌": car_info.get("品牌", ""),
+                        "reason": reason or "未通过数据验证",
+                        "raw_text": car_info.get("raw_text", ""),
+                    }
+                )
                 self.logger.debug(
                     "跳过表格 %d 第 %d 行: %s",
                     table_index + 1,
@@ -345,9 +429,14 @@ class TableExtractor:
         """清除缓存"""
         self._table_cache.clear()
         self._table_metrics.clear()
+        self._invalid_records.clear()
 
     def get_metrics(self) -> Dict[int, Dict[str, int]]:
         """Return a copy of per-table candidate and validation counts."""
         return {
             table_id: values.copy() for table_id, values in self._table_metrics.items()
         }
+
+    def get_invalid_records(self) -> List[Dict[str, Any]]:
+        """Return rejected candidate rows with location and failure details."""
+        return [record.copy() for record in self._invalid_records]

@@ -17,6 +17,7 @@ from .processor.doc_processor import DocProcessor, ProcessingError
 from .ui.console import (
     display_batch_verification,
     display_consistency_result,
+    display_invalid_records,
     display_statistics,
     display_summary_dashboard,
 )
@@ -33,6 +34,19 @@ class ProcessedFile:
     output_file: Path
     processor: DocProcessor
     records: List[Dict[str, Any]]
+    invalid_output_file: Optional[Path] = None
+
+
+def _write_invalid_records(
+    records: List[Dict[str, Any]], output_file: Path
+) -> Optional[Path]:
+    """Write rejected rows beside the valid-record CSV when present."""
+    invalid_output = output_file.with_name(f"{output_file.stem}_invalid_records.csv")
+    if not records:
+        invalid_output.unlink(missing_ok=True)
+        return None
+    write_csv_atomic(records, str(invalid_output))
+    return invalid_output
 
 
 def _render_result(
@@ -53,6 +67,7 @@ def _render_result(
     if batch_results:
         display_batch_verification(batch_results)
     display_consistency_result(consistency_result)
+    display_invalid_records(consistency_result)
 
     if verbose:
         stats = calculate_statistics(records)
@@ -84,6 +99,12 @@ def _process_file(
 
     processor = DocProcessor(str(source), verbose=verbose, config=effective_config)
     records = processor.process()
+    invalid_records = getattr(processor, "invalid_records", [])
+    if not isinstance(invalid_records, list):
+        invalid_records = []
+    invalid_output = _write_invalid_records(invalid_records, destination)
+    if invalid_output is not None:
+        processor.consistency_result["invalid_output_file"] = str(invalid_output)
     if records:
         processor.save_to_csv(str(destination))
         if display:
@@ -97,8 +118,17 @@ def _process_file(
             )
     else:
         logger.warning("未提取到有效车辆记录: %s", source)
+        if display:
+            _render_result(
+                records,
+                processor.batch_results,
+                processor.consistency_result,
+                invalid_output or destination,
+                effective_config,
+                verbose,
+            )
 
-    return ProcessedFile(source, destination, processor, records)
+    return ProcessedFile(source, destination, processor, records, invalid_output)
 
 
 def process_single_file(
@@ -171,6 +201,10 @@ def process_directory(
             errors.append({"file": str(path), "error": str(exc)})
 
     combined_output = Path(output_dir) / "combined_results.csv"
+    combined_invalid_output: Optional[Path] = None
+    all_invalid_records = [
+        record for item in successful for record in item.processor.invalid_records
+    ]
     if all_records:
         write_csv_atomic(all_records, str(combined_output))
 
@@ -204,6 +238,15 @@ def process_directory(
             consistency_result["multiple_batches"] = True
             consistency_result["batch_count"] = len(batch_results)
 
+        consistency_result["invalid_records"] = [
+            record.copy() for record in all_invalid_records
+        ]
+        combined_invalid_output = _write_invalid_records(
+            all_invalid_records, combined_output
+        )
+        if combined_invalid_output is not None:
+            consistency_result["invalid_output_file"] = str(combined_invalid_output)
+
         _render_result(
             all_records,
             batch_results,
@@ -234,5 +277,10 @@ def process_directory(
         "total_records": len(all_records),
         "batch_info": batch_info,
         "output_file": str(combined_output) if all_records else None,
+        "invalid_record_count": len(all_invalid_records),
+        "invalid_records": all_invalid_records,
+        "invalid_output_file": (
+            str(combined_invalid_output) if combined_invalid_output else None
+        ),
         "errors": errors,
     }

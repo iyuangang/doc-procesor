@@ -16,6 +16,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 
 BASE_COLUMNS: Sequence[str] = (
+    "source_file",
+    "source_path",
     "batch",
     "energytype",
     "vmodel",
@@ -25,6 +27,8 @@ BASE_COLUMNS: Sequence[str] = (
     "企业名称",
     "品牌",
     "table_id",
+    "row_number",
+    "reason",
     "raw_text",
 )
 

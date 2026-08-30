@@ -3,8 +3,12 @@
 """
 
 import os
+import csv
 import pytest
+from pathlib import Path
 from unittest.mock import patch
+from docx import Document
+from src.application import process_single_file
 from src.processor.doc_processor import DocProcessor, process_doc
 from tests.utils.test_helpers import create_sample_document
 
@@ -64,3 +68,38 @@ class TestIntegrationDocProcessing:
         assert cars
         assert len(cars) == 3
         assert os.path.exists(output_path)
+
+
+def test_invalid_rows_are_exported_with_source_location(tmp_path: Path) -> None:
+    source = tmp_path / "sample.docx"
+    output_dir = tmp_path / "output"
+    document = Document()
+    document.add_paragraph("第1批")
+    document.add_paragraph("新能源汽车")
+    table = document.add_table(rows=3, cols=4)
+    for cell, value in zip(
+        table.rows[0].cells, ["序号", "企业名称", "品牌", "车辆型号"]
+    ):
+        cell.text = value
+    for cell, value in zip(table.rows[1].cells, ["1", "企业A", "品牌A", "MODEL-A"]):
+        cell.text = value
+    for cell, value in zip(table.rows[2].cells, ["2", "企业B", "品牌B", ""]):
+        cell.text = value
+    document.save(source)
+
+    records = process_single_file(
+        str(source), str(output_dir), verbose=False, display=False
+    )
+
+    assert len(records) == 1
+    invalid_output = output_dir / "sample_invalid_records.csv"
+    assert invalid_output.exists()
+    with invalid_output.open(encoding="utf-8-sig", newline="") as handle:
+        invalid_rows = list(csv.DictReader(handle))
+    assert len(invalid_rows) == 1
+    assert invalid_rows[0]["source_file"] == "sample.docx"
+    assert invalid_rows[0]["table_id"] == "1"
+    assert invalid_rows[0]["row_number"] == "3"
+    assert invalid_rows[0]["序号"] == "2"
+    assert invalid_rows[0]["企业名称"] == "企业B"
+    assert invalid_rows[0]["reason"] == "缺少必要字段: vmodel"
